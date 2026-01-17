@@ -1,263 +1,284 @@
-"""Parser for Claude Code JSONL session files.
+"""Parser for Claude session JSONL files.
 
-Extracts session information, tool uses, and agent activity from session files.
+Extracts tool uses and their results from session transcripts.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-from ..logging import get_logger
-from ..store.models import ToolCategory, ToolStatus
-
-log = get_logger("parser")
 
 
 @dataclass
 class ParsedToolUse:
-    """Tool use extracted from session JSONL."""
+    """Represents a parsed tool use from a Claude session."""
 
-    tool_id: str
+    tool_use_id: str
     tool_name: str
-    tool_category: ToolCategory
-    parameters: dict[str, Any]
-    started_at: datetime
-    status: ToolStatus = ToolStatus.COMPLETED
+    input_params: dict[str, Any]
+    timestamp: str | None = None
+
+    # Result fields - populated from matching tool_result entry
+    result_content: str | None = None
+    error_message: str | None = None
+    is_error: bool = False
+
+    # Computed preview for display
+    preview: str = ""
+
+    def __post_init__(self):
+        """Generate preview from input params."""
+        if not self.preview:
+            self.preview = self._generate_preview()
+
+    def _generate_preview(self) -> str:
+        """Generate a short preview based on tool type."""
+        params = self.input_params
+
+        if self.tool_name == "Read":
+            return params.get("file_path", "")[:80]
+        elif self.tool_name == "Edit":
+            path = params.get("file_path", "")
+            return f"{path} (edit)"[:80]
+        elif self.tool_name == "Write":
+            path = params.get("file_path", "")
+            return f"{path} (write)"[:80]
+        elif self.tool_name == "Bash":
+            cmd = params.get("command", "")
+            return cmd[:80] if len(cmd) <= 80 else cmd[:77] + "..."
+        elif self.tool_name == "Grep":
+            pattern = params.get("pattern", "")
+            path = params.get("path", ".")
+            return f"{pattern} in {path}"[:80]
+        elif self.tool_name == "Glob":
+            pattern = params.get("pattern", "")
+            return pattern[:80]
+        elif self.tool_name == "Task":
+            desc = params.get("description", "")
+            return desc[:80]
+        else:
+            # Generic preview
+            if params:
+                first_val = str(list(params.values())[0])
+                return first_val[:80] if len(first_val) <= 80 else first_val[:77] + "..."
+            return ""
 
 
 @dataclass
 class ParsedSession:
-    """Full session data from JSONL parsing."""
+    """Represents a parsed Claude session."""
 
     session_id: str
-    cwd: str
-    slug: str  # Human-readable name like "parallel-pondering-bird"
-    git_branch: str | None
-    summary: str  # From first summary entry
-    started_at: datetime
-    last_activity: datetime
+    session_path: Path
     tool_uses: list[ParsedToolUse] = field(default_factory=list)
-    is_active: bool = False  # Based on modification time + process check
     message_count: int = 0
-    file_path: Path | None = None
+    start_time: str | None = None
+    summary: str | None = None  # First user message or task description
+    project_path: str | None = None  # Working directory / project path
+
+    @property
+    def tool_count(self) -> int:
+        """Return the number of tool uses."""
+        return len(self.tool_uses)
+
+    @property
+    def display_summary(self) -> str:
+        """Get a display-friendly summary."""
+        if self.summary:
+            # Truncate and clean up
+            summary = self.summary.strip()
+            # Remove newlines
+            summary = summary.replace("\n", " ").replace("\r", "")
+            # Truncate
+            if len(summary) > 60:
+                return summary[:57] + "..."
+            return summary
+        return "No summary available"
 
 
-def _parse_timestamp(ts: str) -> datetime:
-    """Parse an ISO timestamp string to datetime.
-
-    Returns a timezone-naive datetime in local time for consistency
-    with datetime.now() used elsewhere in the codebase.
-    """
-    # Handle ISO format with Z suffix (UTC)
-    if ts.endswith("Z"):
-        ts = ts[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(ts)
-        # Convert to local time and strip timezone info for naive datetime
-        if dt.tzinfo is not None:
-            # Convert UTC to local time
-            local_dt = dt.astimezone()
-            return local_dt.replace(tzinfo=None)
-        return dt
-    except ValueError:
-        return datetime.now()
-
-
-def _determine_tool_category(tool_name: str) -> ToolCategory:
-    """Determine the category of a tool from its name."""
-    if tool_name.startswith("mcp__"):
-        return ToolCategory.MCP
-    elif tool_name.startswith("/") or "__" in tool_name:
-        return ToolCategory.SKILL
-    else:
-        return ToolCategory.BUILTIN
-
-
-def parse_session(file_path: Path) -> ParsedSession | None:
-    """Parse a JSONL session file into a ParsedSession object.
+def parse_session(jsonl_path: Path) -> ParsedSession:
+    """Parse a Claude session JSONL file.
 
     Args:
-        file_path: Path to the JSONL session file
+        jsonl_path: Path to the JSONL session file.
 
     Returns:
-        ParsedSession object or None if parsing fails
+        ParsedSession containing all tool uses with their results.
     """
-    if not file_path.exists():
-        log.warning(f"Session file not found: {file_path}")
-        return None
-
-    session_id = file_path.stem
-    summary = ""
-    slug = ""
-    git_branch = None
-    cwd = ""
-    started_at = None
-    last_activity = None
+    session_id = jsonl_path.stem
     tool_uses: list[ParsedToolUse] = []
+    tool_use_map: dict[str, ParsedToolUse] = {}  # Map tool_use_id to ParsedToolUse
     message_count = 0
+    start_time: str | None = None
+    summary: str | None = None
+    project_path: str | None = None
+    first_user_message_found = False
 
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
 
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-                entry_type = entry.get("type", "")
-                timestamp_str = entry.get("timestamp")
+            entry_type = entry.get("type")
+            timestamp = entry.get("timestamp")
 
-                if timestamp_str:
-                    timestamp = _parse_timestamp(timestamp_str)
-                    if started_at is None:
-                        started_at = timestamp
-                    last_activity = timestamp
+            if start_time is None and timestamp:
+                start_time = timestamp
 
-                # Extract summary
-                if entry_type == "summary" and not summary:
-                    summary = entry.get("summary", "")
+            # Extract project path from cwd field (present in user/assistant messages)
+            if not project_path and "cwd" in entry:
+                project_path = entry["cwd"]
 
-                # Extract session metadata
-                if "sessionId" in entry:
-                    session_id = entry["sessionId"]
-                if "slug" in entry and not slug:
-                    slug = entry["slug"]
-                if "gitBranch" in entry and entry["gitBranch"]:
-                    git_branch = entry["gitBranch"]
-                if "cwd" in entry and not cwd:
-                    cwd = entry["cwd"]
+            # Extract project path from system message or init (fallback)
+            if entry_type == "system" and not project_path:
+                # Look for cwd or working directory in system context
+                system_content = entry.get("message", "")
+                if isinstance(system_content, str):
+                    # Try to find "Working directory:" pattern
+                    if "Working directory:" in system_content:
+                        idx = system_content.find("Working directory:")
+                        end_idx = system_content.find("\n", idx)
+                        if end_idx == -1:
+                            end_idx = len(system_content)
+                        project_path = system_content[idx + 18:end_idx].strip()
 
-                # Count messages
-                if entry_type in ("user", "assistant"):
-                    message_count += 1
+            # Count messages
+            if entry_type in ("user", "assistant"):
+                message_count += 1
 
-                # Extract tool uses from assistant messages
-                if entry_type == "assistant":
-                    message = entry.get("message", {})
-                    content = message.get("content", [])
+            # Extract summary from first real user message
+            if entry_type == "user" and not first_user_message_found:
+                message = entry.get("message", {})
+                content_blocks = message.get("content", [])
 
-                    if isinstance(content, list):
+                for block in content_blocks:
+                    # Skip tool_result blocks - they're not user messages
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        continue
+
+                    # Extract text from user message
+                    text = ""
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "").strip()
+                    elif isinstance(block, str):
+                        text = block.strip()
+
+                    if text:
+                        # Skip system tags
+                        if text.startswith("<"):
+                            continue
+                        # Skip continuation summaries
+                        if text.startswith("This session is being continued"):
+                            continue
+                        # Skip context window messages
+                        if "context window" in text.lower():
+                            continue
+                        # Skip very short messages (likely single chars or artifacts)
+                        if len(text) < 5:
+                            continue
+
+                        summary = text
+                        first_user_message_found = True
+                        break
+
+            # Extract tool_use from assistant messages
+            if entry_type == "assistant":
+                message = entry.get("message", {})
+                content_blocks = message.get("content", [])
+
+                for block in content_blocks:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_use_id = block.get("id", "")
+                        tool_name = block.get("name", "")
+                        input_params = block.get("input", {})
+
+                        parsed = ParsedToolUse(
+                            tool_use_id=tool_use_id,
+                            tool_name=tool_name,
+                            input_params=input_params,
+                            timestamp=timestamp,
+                        )
+                        tool_uses.append(parsed)
+                        tool_use_map[tool_use_id] = parsed
+
+            # Extract tool_result and match to tool_use
+            if entry_type == "user":
+                message = entry.get("message", {})
+                content_blocks = message.get("content", [])
+
+                for block in content_blocks:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        tool_use_id = block.get("tool_use_id", "")
+                        is_error = block.get("is_error", False)
+                        content = block.get("content", [])
+
+                        # Extract text content
+                        result_text = ""
                         for item in content:
-                            if isinstance(item, dict) and item.get("type") == "tool_use":
-                                tool_id = item.get("id", "")
-                                tool_name = item.get("name", "Unknown")
-                                tool_input = item.get("input", {})
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                result_text += item.get("text", "")
+                            elif isinstance(item, str):
+                                result_text += item
 
-                                tool_timestamp = (
-                                    _parse_timestamp(timestamp_str)
-                                    if timestamp_str
-                                    else datetime.now()
-                                )
-                                tool_uses.append(
-                                    ParsedToolUse(
-                                        tool_id=tool_id,
-                                        tool_name=tool_name,
-                                        tool_category=_determine_tool_category(tool_name),
-                                        parameters=tool_input if isinstance(tool_input, dict) else {},
-                                        started_at=tool_timestamp,
-                                    )
-                                )
+                        # Match to tool_use
+                        if tool_use_id in tool_use_map:
+                            tool_use = tool_use_map[tool_use_id]
+                            if is_error:
+                                tool_use.is_error = True
+                                tool_use.error_message = result_text
+                            else:
+                                tool_use.result_content = result_text
 
-    except OSError as e:
-        log.error(f"Failed to read session file {file_path}: {e}")
-        return None
-
-    # Fallback for missing timestamps
-    if started_at is None:
-        started_at = datetime.fromtimestamp(file_path.stat().st_mtime)
-    if last_activity is None:
-        last_activity = started_at
+    # Try to get project path from jsonl path if not found in content
+    # ~/.claude/projects/-Users-name-project/session.jsonl
+    if not project_path:
+        parent_name = jsonl_path.parent.name
+        if parent_name.startswith("-"):
+            # Convert -Users-name-project to /Users/name/project
+            project_path = parent_name.replace("-", "/")
 
     return ParsedSession(
         session_id=session_id,
-        cwd=cwd,
-        slug=slug or session_id[:8],
-        git_branch=git_branch,
-        summary=summary or "No summary available",
-        started_at=started_at,
-        last_activity=last_activity,
+        session_path=jsonl_path,
         tool_uses=tool_uses,
         message_count=message_count,
-        file_path=file_path,
+        start_time=start_time,
+        summary=summary,
+        project_path=project_path,
     )
 
 
-def parse_incremental(
-    file_path: Path,
-    last_offset: int = 0,
-) -> tuple[list[dict[str, Any]], int]:
-    """Parse only new lines since last read.
-
-    For efficient real-time updates, this reads from a specific byte offset
-    and returns only new entries.
+def parse_sessions_in_directory(directory: Path) -> list[ParsedSession]:
+    """Parse all JSONL session files in a directory.
 
     Args:
-        file_path: Path to the JSONL session file
-        last_offset: Byte offset to start reading from
+        directory: Path to directory containing JSONL files.
 
     Returns:
-        Tuple of (list of new entries as dicts, new offset)
+        List of parsed sessions, sorted by start time (newest first).
     """
-    if not file_path.exists():
-        return [], 0
+    sessions = []
 
-    new_entries: list[dict[str, Any]] = []
+    # Search recursively for JSONL files
+    for jsonl_file in directory.glob("**/*.jsonl"):
+        # Skip subagent files - they're nested sessions
+        if "subagents" in str(jsonl_file):
+            continue
+        try:
+            session = parse_session(jsonl_file)
+            sessions.append(session)
+        except Exception:
+            # Skip files that can't be parsed
+            continue
 
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            f.seek(last_offset)
-            content = f.read()
-            new_offset = f.tell()
-
-            for line in content.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-
-                try:
-                    entry = json.loads(line)
-                    new_entries.append(entry)
-                except json.JSONDecodeError:
-                    continue
-
-    except OSError as e:
-        log.error(f"Failed to read session file {file_path}: {e}")
-        return [], last_offset
-
-    return new_entries, new_offset
-
-
-def get_session_summary(file_path: Path) -> str | None:
-    """Quick extraction of just the session summary.
-
-    More efficient than full parsing when only summary is needed.
-    """
-    if not file_path.exists():
-        return None
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-
-                try:
-                    entry = json.loads(line)
-                    if entry.get("type") == "summary":
-                        return entry.get("summary")
-                except json.JSONDecodeError:
-                    continue
-
-    except OSError:
-        pass
-
-    return None
+    # Sort by start time (newest first)
+    sessions.sort(key=lambda s: s.start_time or "", reverse=True)
+    return sessions

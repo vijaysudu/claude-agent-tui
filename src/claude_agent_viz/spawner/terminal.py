@@ -1,213 +1,214 @@
-"""Terminal detection and launching for spawning Claude Code sessions.
-
-Supports macOS Terminal.app, iTerm2, and tmux.
-"""
+"""Terminal spawner for Claude sessions."""
 
 from __future__ import annotations
 
 import os
+import pty
 import shutil
 import subprocess
-from enum import Enum
-from pathlib import Path
-
-from ..logging import get_logger
-
-log = get_logger("spawner")
+import sys
+from dataclasses import dataclass
+from typing import Tuple
 
 
-class TerminalType(Enum):
-    """Supported terminal types."""
+@dataclass
+class SpawnResult:
+    """Result of spawning a Claude session."""
 
-    ITERM2 = "iterm2"
-    TERMINAL_APP = "terminal"
-    TMUX = "tmux"
-    UNKNOWN = "unknown"
+    success: bool
+    pid: int | None = None
+    error: str | None = None
+    master_fd: int | None = None
+    slave_fd: int | None = None
 
 
-def detect_terminal() -> TerminalType:
-    """Detect the best available terminal to use.
-
-    Prefers iTerm2 > tmux > Terminal.app on macOS.
+def get_available_terminals() -> list[str]:
+    """Get list of available terminal emulators.
 
     Returns:
-        The detected terminal type
+        List of available terminal command names.
     """
-    # Check if running inside tmux
-    if os.environ.get("TMUX"):
-        return TerminalType.TMUX
+    terminals = [
+        "wezterm",
+        "kitty",
+        "alacritty",
+        "iterm2",
+        "gnome-terminal",
+        "konsole",
+        "xterm",
+        "Terminal.app",
+    ]
 
-    # Check for iTerm2 (macOS)
-    if _is_iterm2_available():
-        return TerminalType.ITERM2
-
-    # Check for Terminal.app (macOS)
-    if _is_terminal_app_available():
-        return TerminalType.TERMINAL_APP
-
-    return TerminalType.UNKNOWN
-
-
-def get_available_terminals() -> list[TerminalType]:
-    """Get list of available terminal types.
-
-    Returns:
-        List of available terminal types
-    """
     available = []
+    for term in terminals:
+        if shutil.which(term):
+            available.append(term)
 
-    if os.environ.get("TMUX"):
-        available.append(TerminalType.TMUX)
-
-    if _is_iterm2_available():
-        available.append(TerminalType.ITERM2)
-
-    if _is_terminal_app_available():
-        available.append(TerminalType.TERMINAL_APP)
+    # Check for macOS Terminal.app
+    if sys.platform == "darwin" and os.path.exists("/System/Applications/Utilities/Terminal.app"):
+        available.append("Terminal.app")
 
     return available
 
 
-def _is_iterm2_available() -> bool:
-    """Check if iTerm2 is available."""
-    return Path("/Applications/iTerm.app").exists()
-
-
-def _is_terminal_app_available() -> bool:
-    """Check if Terminal.app is available."""
-    # Terminal.app can be in different locations depending on macOS version
-    paths = [
-        "/System/Applications/Utilities/Terminal.app",
-        "/Applications/Utilities/Terminal.app",
-    ]
-    return any(Path(p).exists() for p in paths)
-
-
-def spawn_session(
-    cwd: str,
-    terminal: TerminalType | None = None,
-) -> bool:
-    """Spawn a new Claude Code session in a terminal window.
+def spawn_session(cwd: str, terminal: str | None = None) -> SpawnResult:
+    """Spawn a new Claude session in an external terminal.
 
     Args:
-        cwd: Working directory for the new session
-        terminal: Terminal type to use. If None, auto-detect.
+        cwd: Working directory for the session.
+        terminal: Terminal emulator to use (auto-detect if None).
 
     Returns:
-        True if successfully spawned, False otherwise
+        SpawnResult indicating success or failure.
     """
+    # Find claude executable
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        return SpawnResult(
+            success=False,
+            error="'claude' command not found in PATH",
+        )
+
+    # Auto-detect terminal if not specified
     if terminal is None:
-        terminal = detect_terminal()
-
-    # Validate cwd
-    if not Path(cwd).is_dir():
-        log.error(f"Invalid working directory: {cwd}")
-        return False
-
-    # Check that claude command is available
-    if not shutil.which("claude"):
-        log.error("Claude command not found in PATH")
-        return False
-
-    log.info(f"Spawning session in {cwd} using {terminal.value}")
+        available = get_available_terminals()
+        if not available:
+            return SpawnResult(
+                success=False,
+                error="No supported terminal emulator found",
+            )
+        terminal = available[0]
 
     try:
-        if terminal == TerminalType.ITERM2:
-            return _spawn_iterm2(cwd)
-        elif terminal == TerminalType.TERMINAL_APP:
-            return _spawn_terminal_app(cwd)
-        elif terminal == TerminalType.TMUX:
-            return _spawn_tmux(cwd)
-        else:
-            log.error(f"Unsupported terminal type: {terminal}")
-            return False
-    except Exception as e:
-        log.error(f"Failed to spawn session: {e}")
-        return False
+        if terminal == "Terminal.app" or (sys.platform == "darwin" and terminal is None):
+            # macOS Terminal.app
+            script = f'tell application "Terminal" to do script "cd {cwd} && claude"'
+            subprocess.Popen(["osascript", "-e", script])
 
-
-def _spawn_iterm2(cwd: str) -> bool:
-    """Spawn a new session in iTerm2."""
-    # AppleScript to open new tab in iTerm2
-    script = f'''
-    tell application "iTerm2"
-        activate
-        tell current window
-            create tab with default profile
-            tell current session
-                write text "cd {_escape_applescript(cwd)} && claude"
+        elif terminal == "iterm2":
+            # iTerm2
+            script = f'''
+            tell application "iTerm"
+                create window with default profile
+                tell current session of current window
+                    write text "cd {cwd} && claude"
+                end tell
             end tell
-        end tell
-    end tell
-    '''
+            '''
+            subprocess.Popen(["osascript", "-e", script])
 
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+        elif terminal == "wezterm":
+            subprocess.Popen(
+                ["wezterm", "start", "--cwd", cwd, "--", "claude"],
+                start_new_session=True,
+            )
 
-    if result.returncode != 0:
-        log.error(f"iTerm2 AppleScript failed: {result.stderr}")
-        return False
+        elif terminal == "kitty":
+            subprocess.Popen(
+                ["kitty", "--directory", cwd, "claude"],
+                start_new_session=True,
+            )
 
-    return True
+        elif terminal == "alacritty":
+            subprocess.Popen(
+                ["alacritty", "--working-directory", cwd, "-e", "claude"],
+                start_new_session=True,
+            )
+
+        elif terminal == "gnome-terminal":
+            subprocess.Popen(
+                ["gnome-terminal", f"--working-directory={cwd}", "--", "claude"],
+                start_new_session=True,
+            )
+
+        elif terminal == "konsole":
+            subprocess.Popen(
+                ["konsole", "--workdir", cwd, "-e", "claude"],
+                start_new_session=True,
+            )
+
+        elif terminal == "xterm":
+            subprocess.Popen(
+                ["xterm", "-e", f"cd {cwd} && claude"],
+                start_new_session=True,
+            )
+
+        else:
+            return SpawnResult(
+                success=False,
+                error=f"Unsupported terminal: {terminal}",
+            )
+
+        return SpawnResult(success=True)
+
+    except Exception as e:
+        return SpawnResult(
+            success=False,
+            error=str(e),
+        )
 
 
-def _spawn_terminal_app(cwd: str) -> bool:
-    """Spawn a new session in Terminal.app."""
-    # AppleScript to open new window in Terminal.app
-    script = f'''
-    tell application "Terminal"
-        activate
-        do script "cd {_escape_applescript(cwd)} && claude"
-    end tell
-    '''
+def spawn_embedded(cwd: str) -> SpawnResult:
+    """Spawn a Claude session for embedded terminal use.
 
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    This creates a PTY pair that can be used for an embedded terminal.
 
-    if result.returncode != 0:
-        log.error(f"Terminal.app AppleScript failed: {result.stderr}")
-        return False
+    Args:
+        cwd: Working directory for the session.
 
-    return True
-
-
-def _spawn_tmux(cwd: str) -> bool:
-    """Spawn a new session in tmux.
-
-    Creates a new window in the current tmux session.
+    Returns:
+        SpawnResult with PTY file descriptors.
     """
-    # Create new tmux window
-    result = subprocess.run(
-        [
-            "tmux",
-            "new-window",
-            "-c",
-            cwd,
-            "-n",
-            f"claude-{Path(cwd).name[:10]}",
-            "claude",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    # Find claude executable
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        return SpawnResult(
+            success=False,
+            error="'claude' command not found in PATH",
+        )
 
-    if result.returncode != 0:
-        log.error(f"tmux new-window failed: {result.stderr}")
-        return False
+    try:
+        # Create pseudo-terminal
+        master_fd, slave_fd = pty.openpty()
 
-    return True
+        # Fork the process
+        pid = os.fork()
 
+        if pid == 0:
+            # Child process
+            os.close(master_fd)
+            os.setsid()
 
-def _escape_applescript(s: str) -> str:
-    """Escape a string for use in AppleScript."""
-    # Escape backslashes and double quotes
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+            # Set up slave as controlling terminal
+            os.dup2(slave_fd, 0)  # stdin
+            os.dup2(slave_fd, 1)  # stdout
+            os.dup2(slave_fd, 2)  # stderr
+
+            if slave_fd > 2:
+                os.close(slave_fd)
+
+            # Change to working directory
+            os.chdir(cwd)
+
+            # Set environment
+            env = os.environ.copy()
+            env["TERM"] = "xterm-256color"
+
+            # Execute claude
+            os.execvpe(claude_path, [claude_path], env)
+
+        else:
+            # Parent process
+            os.close(slave_fd)
+
+            return SpawnResult(
+                success=True,
+                pid=pid,
+                master_fd=master_fd,
+            )
+
+    except Exception as e:
+        return SpawnResult(
+            success=False,
+            error=str(e),
+        )

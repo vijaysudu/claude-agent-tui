@@ -1,381 +1,326 @@
-"""Detail panel widget for Claude Agent Visualizer.
+"""Detail panel widget for displaying tool and session details."""
 
-Shows detailed information about the selected session, agent, or tool.
-"""
+from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+import json
+from typing import Any
 
+from rich.syntax import Syntax
 from rich.text import Text
+from textual.containers import Container
 from textual.app import ComposeResult
-from textual.containers import Container, Vertical
-from textual.widgets import Static, ProgressBar, DataTable
+from textual.widgets import Static, RichLog
 
-from ...store.models import (
-    Agent,
-    AgentStatus,
-    InputRequest,
-    InputRequestStatus,
-    Session,
-    ToolUse,
-    ToolStatus,
-)
+from ...store.models import ToolUse, ToolStatus, Session
+
+
+# Status display
+STATUS_DISPLAY = {
+    ToolStatus.PENDING: (" Pending", "yellow"),
+    ToolStatus.RUNNING: (" Running", "blue"),
+    ToolStatus.COMPLETED: (" Completed", "green"),
+    ToolStatus.ERROR: (" Error", "red"),
+}
+
+
+def get_language_from_path(file_path: str) -> str:
+    """Determine the language/lexer from a file path."""
+    from pathlib import Path
+    suffix_map = {
+        ".py": "python",
+        ".js": "javascript",
+        ".ts": "typescript",
+        ".tsx": "tsx",
+        ".jsx": "jsx",
+        ".json": "json",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".md": "markdown",
+        ".html": "html",
+        ".css": "css",
+        ".sh": "bash",
+        ".rs": "rust",
+        ".go": "go",
+    }
+    path = Path(file_path)
+    return suffix_map.get(path.suffix.lower(), "text")
 
 
 class DetailPanel(Container):
-    """Panel showing details of selected item.
-
-    Adapts its content based on what type of item is selected:
-    - Session: Overview with agent summary
-    - Agent: Status, tokens, tools used
-    - Tool: Parameters and result
-    - Input Request: Question and options
-    """
+    """Panel for displaying detailed tool or session information."""
 
     DEFAULT_CSS = """
     DetailPanel {
-        width: 100%;
         height: 100%;
-        border: solid $surface-lighten-2;
+        width: 100%;
+        border: solid $primary;
+        padding: 0;
+    }
+
+    DetailPanel #detail-header {
+        height: 3;
+        padding: 0 1;
         background: $surface;
-        padding: 1 2;
+        border-bottom: solid $primary;
     }
 
-    DetailPanel .title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    DetailPanel .section {
-        margin-bottom: 1;
-    }
-
-    DetailPanel .section-header {
-        color: $text-muted;
-        text-style: bold;
-        margin-bottom: 0;
-    }
-
-    DetailPanel .value {
-        color: $text;
-    }
-
-    DetailPanel .dim {
-        color: $text-muted;
-    }
-
-    DetailPanel .status-active {
-        color: $success;
-    }
-
-    DetailPanel .status-running {
-        color: $warning;
-    }
-
-    DetailPanel .status-completed {
-        color: $text-muted;
-    }
-
-    DetailPanel .status-failed {
-        color: $error;
-    }
-
-    DetailPanel .status-waiting {
-        color: $primary;
-    }
-
-    DetailPanel .prompt {
-        background: $surface-lighten-1;
-        padding: 1;
-        margin: 1 0;
-    }
-
-    DetailPanel DataTable {
-        height: auto;
-        max-height: 10;
+    DetailPanel #detail-content {
+        height: 1fr;
+        scrollbar-gutter: stable;
+        border: none;
     }
     """
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._current_data = None
+        self._current_tool: ToolUse | None = None
+        self._current_session: Session | None = None
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="detail-content"):
-            yield Static("Select an item to view details", classes="dim")
+        """Compose the widget with persistent children."""
+        yield Static("Select a session or tool", id="detail-header")
+        yield RichLog(highlight=True, markup=True, wrap=True, id="detail-content")
 
-    def show(self, data) -> None:
-        """Show details for the given data item."""
-        self._current_data = data
+    def show_tool(self, tool: ToolUse | None) -> None:
+        """Display tool details."""
+        self._current_tool = tool
 
-        # Clear existing content
-        content = self.query_one("#detail-content", Vertical)
-        content.remove_children()
+        header = self.query_one("#detail-header", Static)
+        content = self.query_one("#detail-content", RichLog)
+        content.clear()
 
-        if isinstance(data, Session):
-            self._show_session(content, data)
-        elif isinstance(data, Agent):
-            self._show_agent(content, data)
-        elif isinstance(data, ToolUse):
-            self._show_tool(content, data)
-        elif isinstance(data, InputRequest):
-            self._show_input_request(content, data)
+        if tool is None:
+            if self._current_session:
+                self._render_session(self._current_session, header, content)
+            else:
+                header.update("Select a tool to view details")
+            return
+
+        self._render_tool(tool, header, content)
+
+    def show_session(self, session: Session | None) -> None:
+        """Display session details."""
+        self._current_session = session
+        self._current_tool = None
+
+        header = self.query_one("#detail-header", Static)
+        content = self.query_one("#detail-content", RichLog)
+        content.clear()
+
+        if session is None:
+            header.update("Select a session to view details")
+            return
+
+        self._render_session(session, header, content)
+
+    def _render_session(self, session: Session, header: Static, content: RichLog) -> None:
+        """Render session content."""
+        # Update header
+        header_text = f" Session: {session.display_name}"
+        if session.is_active:
+            header_text += " [green](active)[/green]"
+        header.update(header_text)
+
+        # Session info
+        content.write(Text("Session Information", style="bold cyan"))
+        content.write("")
+        content.write(Text.assemble(("ID: ", "bold"), (session.session_id, "")))
+        content.write(Text.assemble(("Project: ", "bold"), (session.project_name, "cyan")))
+
+        if session.project_path:
+            content.write(Text.assemble(("Path: ", "bold"), (session.project_path, "dim")))
+
+        status = "[green]Active[/green]" if session.is_active else "[dim]Inactive[/dim]"
+        content.write(f"[bold]Status:[/bold] {status}")
+
+        if session.start_time:
+            content.write(Text.assemble(("Started: ", "bold"), (session.start_time, "")))
+
+        content.write("")
+        content.write(Text("─" * 40, style="dim"))
+        content.write("")
+
+        # Summary
+        if session.summary:
+            content.write(Text("Summary", style="bold cyan"))
+            content.write("")
+            content.write(session.summary)
+            content.write("")
+            content.write(Text("─" * 40, style="dim"))
+            content.write("")
+
+        # Tool stats
+        content.write(Text("Tool Usage", style="bold cyan"))
+        content.write("")
+        content.write(f"Total tool calls: {session.tool_count}")
+
+        # Count by tool type
+        tool_counts: dict[str, int] = {}
+        error_count = 0
+        for tool in session.tool_uses:
+            tool_counts[tool.tool_name] = tool_counts.get(tool.tool_name, 0) + 1
+            if tool.status == ToolStatus.ERROR:
+                error_count += 1
+
+        content.write("")
+        for name, count in sorted(tool_counts.items()):
+            content.write(f"  {name}: {count}")
+
+        if error_count > 0:
+            content.write("")
+            content.write(Text(f"Errors: {error_count}", style="red"))
+
+        content.write("")
+        content.write(Text("─" * 40, style="dim"))
+        content.write("")
+        content.write(Text("Select a tool from the list to view details", style="dim italic"))
+
+    def _render_tool(self, tool: ToolUse, header: Static, content: RichLog) -> None:
+        """Render tool content."""
+        # Update header
+        status_text, status_color = STATUS_DISPLAY.get(
+            tool.status, ("Unknown", "white")
+        )
+        header_text = f" {tool.tool_name}  [{status_color}]{status_text}[/]"
+        header.update(header_text)
+
+        # Overview section
+        content.write(Text("Overview", style="bold cyan"))
+        content.write("")
+
+        # File path if applicable
+        file_path = tool.get_file_path()
+        if file_path:
+            content.write(Text.assemble(("File: ", "bold"), (file_path, "")))
+
+        # Command for Bash
+        if tool.tool_name == "Bash":
+            cmd = tool.input_params.get("command", "")
+            content.write(Text.assemble(("Command: ", "bold"), ("", "")))
+            content.write(Text(f"  $ {cmd}", style="green"))
+
+        # Pattern for Grep/Glob
+        if tool.tool_name in ("Grep", "Glob"):
+            pattern = tool.input_params.get("pattern", "")
+            content.write(Text.assemble(("Pattern: ", "bold"), (pattern, "yellow")))
+
+        # Duration if available
+        if tool.duration_ms is not None:
+            content.write(f"Duration: {tool.duration_ms}ms")
+
+        # Preview
+        if tool.preview:
+            content.write("")
+            content.write(Text("Preview:", style="bold"))
+            content.write(Text(tool.preview, style="dim"))
+
+        content.write("")
+        content.write(Text("─" * 40, style="dim"))
+
+        # Content/Result section
+        if tool.result_content or tool.error_message:
+            content.write("")
+            content.write(Text("Result", style="bold cyan"))
+            content.write("")
+
+            if tool.error_message:
+                content.write(Text(" ERROR", style="red bold"))
+                content.write(Text(tool.error_message, style="red"))
+            elif tool.result_content:
+                self._write_tool_result(tool, content)
+
+            content.write("")
+            content.write(Text("─" * 40, style="dim"))
+
+        # Parameters section
+        if tool.input_params:
+            content.write("")
+            content.write(Text("Parameters", style="bold cyan"))
+            content.write("")
+
+            for name, value in tool.input_params.items():
+                content.write(Text(f"{name}:", style="bold cyan"))
+                if isinstance(value, (dict, list)):
+                    value_str = json.dumps(value, indent=2)
+                else:
+                    value_str = str(value)
+                content.write(Text(value_str, style="dim"))
+                content.write("")
+
+    def _write_tool_result(self, tool: ToolUse, content: RichLog) -> None:
+        """Write tool result with appropriate formatting."""
+        result = tool.result_content or ""
+
+        if tool.tool_name == "Read":
+            file_path = tool.input_params.get("file_path", "unknown")
+            language = get_language_from_path(file_path)
+            try:
+                syntax = Syntax(
+                    result,
+                    language,
+                    theme="monokai",
+                    line_numbers=True,
+                    word_wrap=True,
+                )
+                content.write(syntax)
+            except Exception:
+                content.write(result)
+
+        elif tool.tool_name == "Edit":
+            old_string = tool.input_params.get("old_string", "")
+            new_string = tool.input_params.get("new_string", "")
+
+            content.write(Text("Changes:", style="bold"))
+            content.write("")
+
+            for line in old_string.splitlines():
+                styled = Text()
+                styled.append("- ", style="red bold")
+                styled.append(line, style="red")
+                content.write(styled)
+
+            for line in new_string.splitlines():
+                styled = Text()
+                styled.append("+ ", style="green bold")
+                styled.append(line, style="green")
+                content.write(styled)
+
+            if result and result != "OK":
+                content.write("")
+                content.write(Text("Output:", style="bold"))
+                content.write(result)
+
+        elif tool.tool_name == "Write":
+            file_path = tool.input_params.get("file_path", "unknown")
+            written_content = tool.input_params.get("content", "")
+            language = get_language_from_path(file_path)
+            try:
+                syntax = Syntax(
+                    written_content,
+                    language,
+                    theme="monokai",
+                    line_numbers=True,
+                    word_wrap=True,
+                )
+                content.write(syntax)
+            except Exception:
+                content.write(written_content)
+
+        elif tool.tool_name == "Bash":
+            try:
+                syntax = Syntax(
+                    result,
+                    "bash",
+                    theme="monokai",
+                    word_wrap=True,
+                )
+                content.write(syntax)
+            except Exception:
+                content.write(result)
+
+        elif tool.tool_name in ("Grep", "Glob"):
+            for line in result.splitlines():
+                content.write(line)
+
         else:
-            content.mount(Static("Select an item to view details", classes="dim"))
-
-    def _show_session(self, container: Vertical, session: Session) -> None:
-        """Show session details."""
-        # Title
-        dir_name = Path(session.working_dir).name or session.working_dir
-        container.mount(Static(f"Session: {dir_name}", classes="title"))
-
-        # Status and info - use Rich colors directly
-        status_color = {
-            "active": "green",
-            "completed": "dim",
-            "failed": "red",
-        }.get(session.status.value, "")
-        container.mount(
-            Static(
-                Text.assemble(
-                    ("Status: ", ""),
-                    (session.status.value.upper(), status_color),
-                    ("  |  ", "dim"),
-                    ("PID: ", ""),
-                    (str(session.pid), ""),
-                ),
-                classes="section",
-            )
-        )
-
-        # Working directory
-        container.mount(Static(f"Directory: {session.working_dir}", classes="dim section"))
-
-        # Duration
-        duration = self._format_duration(session.duration)
-        container.mount(Static(f"Duration: {duration}", classes="section"))
-
-        # Statistics
-        container.mount(Static("Statistics", classes="section-header"))
-        total_agents = len(session.agents)
-        active = len([a for a in session.agents if a.status == AgentStatus.RUNNING])
-        completed = len([a for a in session.agents if a.status == AgentStatus.COMPLETED])
-        waiting = len([a for a in session.agents if a.status == AgentStatus.WAITING_INPUT])
-        failed = len([a for a in session.agents if a.status == AgentStatus.FAILED])
-
-        stats_text = Text.assemble(
-            (f"Total: {total_agents}", ""),
-            ("  |  ", "dim"),
-            (f"Active: {active}", "yellow"),
-            ("  |  ", "dim"),
-            (f"Completed: {completed}", "dim"),
-        )
-        if waiting > 0:
-            stats_text.append("  |  ", "dim")
-            stats_text.append(f"Waiting: {waiting}", "cyan")
-        if failed > 0:
-            stats_text.append("  |  ", "dim")
-            stats_text.append(f"Failed: {failed}", "red")
-
-        container.mount(Static(stats_text, classes="section"))
-
-        # Total tokens
-        total_tokens = sum(a.tokens_used for a in session.agents)
-        container.mount(Static(f"Total tokens: {total_tokens:,}", classes="section"))
-
-    def _show_agent(self, container: Vertical, agent: Agent) -> None:
-        """Show agent details."""
-        # Title
-        container.mount(Static(f"Agent: {agent.agent_type}", classes="title"))
-
-        # Status - use Rich colors directly
-        status_color = {
-            AgentStatus.RUNNING: "yellow",
-            AgentStatus.COMPLETED: "dim",
-            AgentStatus.FAILED: "red",
-            AgentStatus.WAITING_INPUT: "cyan",
-        }.get(agent.status, "")
-        status_icon = {
-            AgentStatus.RUNNING: "●",
-            AgentStatus.COMPLETED: "○",
-            AgentStatus.FAILED: "✗",
-            AgentStatus.WAITING_INPUT: "◐",
-        }.get(agent.status, "?")
-
-        container.mount(
-            Static(
-                Text.assemble(
-                    ("Status: ", ""),
-                    (f"{status_icon} {agent.status.value.replace('_', ' ').title()}", status_color),
-                ),
-                classes="section",
-            )
-        )
-
-        # Description
-        container.mount(Static(f"Task: {agent.description}", classes="section"))
-
-        # Duration
-        duration = self._format_duration(agent.duration)
-        container.mount(Static(f"Duration: {duration}", classes="section"))
-
-        # Context metrics
-        container.mount(Static("Context", classes="section-header"))
-        container.mount(
-            Static(
-                f"Tokens: {agent.tokens_used:,}  |  Messages: {agent.messages_count}",
-                classes="section",
-            )
-        )
-
-        # Token progress bar (assume 100k context for visualization)
-        if agent.tokens_used > 0:
-            progress = min(agent.tokens_used / 100000, 1.0)
-            bar = ProgressBar(total=100, show_eta=False)
-            bar.progress = int(progress * 100)
-            container.mount(bar)
-
-        # Recent tools
-        if agent.tool_uses:
-            container.mount(Static("Recent Tools", classes="section-header"))
-            table = DataTable(show_header=False)
-            table.add_columns("status", "tool", "result")
-
-            for tool in agent.tool_uses[-5:]:
-                icon = {
-                    ToolStatus.RUNNING: ("●", "yellow"),
-                    ToolStatus.COMPLETED: ("○", "green"),
-                    ToolStatus.FAILED: ("✗", "red"),
-                }.get(tool.status, ("?", ""))
-
-                result = tool.result_preview or tool.error_message or ""
-                if len(result) > 30:
-                    result = result[:27] + "..."
-
-                table.add_row(
-                    Text(icon[0], style=icon[1]),
-                    tool.display_name,
-                    Text(result, style="dim"),
-                )
-
-            container.mount(table)
-
-    def _show_tool(self, container: Vertical, tool: ToolUse) -> None:
-        """Show tool use details."""
-        container.mount(Static(f"Tool: {tool.display_name}", classes="title"))
-
-        # Status - use Rich colors directly
-        status_color = {
-            ToolStatus.RUNNING: "yellow",
-            ToolStatus.COMPLETED: "green",
-            ToolStatus.FAILED: "red",
-        }.get(tool.status, "")
-        container.mount(
-            Static(
-                Text.assemble(
-                    ("Status: ", ""),
-                    (tool.status.value.upper(), status_color),
-                ),
-                classes="section",
-            )
-        )
-
-        # Duration
-        if tool.duration_ms:
-            container.mount(Static(f"Duration: {tool.duration_ms}ms", classes="section"))
-
-        # Category
-        container.mount(Static(f"Category: {tool.tool_category.value}", classes="dim section"))
-
-        # Parameters
-        if tool.parameters:
-            container.mount(Static("Parameters", classes="section-header"))
-            for key, value in list(tool.parameters.items())[:5]:
-                value_str = str(value)
-                if len(value_str) > 50:
-                    value_str = value_str[:47] + "..."
-                container.mount(Static(f"  {key}: {value_str}", classes="dim"))
-
-        # Result
-        if tool.result_preview:
-            container.mount(Static("Result", classes="section-header"))
-            container.mount(Static(tool.result_preview, classes="section"))
-
-        # Error
-        if tool.error_message:
-            container.mount(Static("Error", classes="section-header"))
-            container.mount(
-                Static(
-                    Text(tool.error_message, style="red"),
-                    classes="section",
-                )
-            )
-
-    def _show_input_request(self, container: Vertical, request: InputRequest) -> None:
-        """Show input request details."""
-        container.mount(Static("Input Request", classes="title"))
-
-        # Status - use Rich colors directly
-        status_color = {
-            InputRequestStatus.PENDING: "cyan",
-            InputRequestStatus.RESPONDED: "dim",
-            InputRequestStatus.EXPIRED: "red",
-        }.get(request.status, "")
-        container.mount(
-            Static(
-                Text.assemble(
-                    ("Status: ", ""),
-                    (request.status.value.upper(), status_color),
-                ),
-                classes="section",
-            )
-        )
-
-        # Time waiting
-        if request.status == InputRequestStatus.PENDING:
-            wait_time = datetime.now() - request.created_at
-            wait_str = self._format_duration(wait_time)
-            container.mount(Static(f"Waiting: {wait_str}", classes="section"))
-
-        # Prompt
-        container.mount(Static("Question", classes="section-header"))
-        container.mount(Static(request.prompt, classes="prompt"))
-
-        # Options
-        if request.options:
-            container.mount(Static("Options", classes="section-header"))
-            for i, opt in enumerate(request.options, 1):
-                opt_text = Text.assemble(
-                    (f"[{i}] ", "bold"),
-                    (opt.label, ""),
-                )
-                if opt.description:
-                    opt_text.append(f" - {opt.description}", "dim")
-                container.mount(Static(opt_text))
-
-        # Instructions
-        if request.status == InputRequestStatus.PENDING:
-            container.mount(
-                Static(
-                    "\nRespond in the terminal where Claude is running.",
-                    classes="dim section",
-                )
-            )
-
-        # Response (if responded)
-        if request.response:
-            container.mount(Static("Response", classes="section-header"))
-            container.mount(Static(request.response, classes="section"))
-
-    def _format_duration(self, td) -> str:
-        """Format a timedelta as a human-readable string."""
-        total_seconds = int(td.total_seconds())
-        minutes, seconds = divmod(total_seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-
-        if hours > 0:
-            return f"{hours}h {minutes}m {seconds}s"
-        elif minutes > 0:
-            return f"{minutes}m {seconds}s"
-        else:
-            return f"{seconds}s"
+            content.write(result)

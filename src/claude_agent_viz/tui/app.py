@@ -1,237 +1,369 @@
-"""Main Textual application for Claude Agent Visualizer.
+"""Main TUI application for Claude Agent Visualizer."""
 
-This is the entry point for the TUI dashboard.
-"""
+from __future__ import annotations
 
-import asyncio
+import os
+from pathlib import Path
+from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
-from textual.widgets import Footer
+from textual.containers import Container, Horizontal, Vertical
+from textual.widgets import Header, Footer, Static
 
-from ..discovery import SessionWatcher
-from ..state import AppState
+from .widgets.session_list import SessionList
+from .widgets.tool_list import ToolList
 from .widgets.detail_panel import DetailPanel
-from .widgets.session_tree import SessionTree
-from .widgets.status_bar import StatusBar
-
-
-# Refresh interval in seconds
-REFRESH_INTERVAL = 5.0
+from .screens.terminal_screen import TerminalScreen
+from ..state import AppState
+from ..spawner.terminal import spawn_session
 
 
 class ClaudeAgentVizApp(App):
-    """Claude Agent Visualizer TUI application."""
+    """Main application for visualizing Claude agent sessions."""
 
     TITLE = "Claude Agent Visualizer"
+    SUB_TITLE = "Monitor and interact with Claude sessions"
 
     CSS = """
-    Screen {
-        background: $surface;
+    #main-layout {
+        height: 1fr;
     }
 
-    #main-container {
+    #content-area {
+        height: 1fr;
+    }
+
+    .sidebar {
+        width: 30;
         height: 100%;
     }
 
-    #tree-container {
-        width: 40%;
-        min-width: 30;
+    .main-content {
+        width: 1fr;
+        height: 100%;
     }
 
-    #detail-container {
-        width: 60%;
+    .sessions-panel {
+        height: 40%;
+        border: solid $primary;
+    }
+
+    .tools-panel {
+        height: 60%;
+        border: solid $primary;
+    }
+
+    .detail-area {
+        height: 100%;
+        width: 100%;
+    }
+
+    #status-indicator {
+        height: 1;
+        background: $primary-background;
+        padding: 0 1;
+        color: $text;
+    }
+
+    .mode-external {
+        color: $warning;
+    }
+
+    .mode-embedded {
+        color: $success;
     }
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("n", "new_session", "New Session"),
-        Binding("space", "toggle_expand", "Expand/Collapse"),
-        Binding("tab", "next_session", "Next Session"),
-        Binding("shift+tab", "prev_session", "Prev Session"),
-        Binding("?", "show_help", "Help"),
+        Binding("q", "quit", "Quit", show=True),
+        Binding("n", "new_session", "New Session", show=True),
+        Binding("c", "resume_session", "Resume", show=True),
+        Binding("k", "kill_session", "Kill Session", show=True),
+        Binding("t", "toggle_spawn_mode", "Toggle Mode", show=True),
+        Binding("r", "refresh", "Refresh", show=True),
+        Binding("escape", "back_to_session", "Back", show=True),
+        Binding("question_mark", "help", "Help", show=True, key_display="?"),
     ]
 
-    def __init__(self, state: AppState | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        sessions_dir: Path | None = None,
+        demo_mode: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the application.
+
+        Args:
+            sessions_dir: Directory containing session JSONL files.
+            demo_mode: Whether to run in demo mode with sample data.
+        """
         super().__init__(**kwargs)
-        self.state = state or AppState()
-        self._demo_mode = state is not None
-        self._watcher: SessionWatcher | None = None
-        self._refresh_task: asyncio.Task | None = None
+        self.sessions_dir = sessions_dir
+        self.demo_mode = demo_mode
+        self.state = AppState()
+
+        # Register state update callback
+        self.state.add_update_listener(self._on_state_update)
 
     def compose(self) -> ComposeResult:
-        yield StatusBar()
-        with Horizontal(id="main-container"):
-            yield SessionTree(id="tree-container")
-            yield DetailPanel(id="detail-container")
+        """Compose the application layout."""
+        yield Header()
+
+        with Vertical(id="main-layout"):
+            with Horizontal(id="content-area"):
+                # Sidebar with sessions and tools
+                with Vertical(classes="sidebar"):
+                    with Container(classes="sessions-panel"):
+                        yield Static(" Sessions", classes="panel-title")
+                        yield SessionList(id="session-list")
+
+                    with Container(classes="tools-panel"):
+                        yield Static(" Tools", classes="panel-title")
+                        yield ToolList(id="tool-list")
+
+                # Main content area
+                with Container(classes="main-content"):
+                    yield DetailPanel(id="detail-panel", classes="detail-area")
+
+            # Status indicator (above footer)
+            yield Static(
+                self._get_status_text(),
+                id="status-indicator",
+                classes="status-indicator",
+            )
+
         yield Footer()
 
     def on_mount(self) -> None:
-        """Initialize the app when it mounts."""
-        # Set up state observer
-        self.state.add_observer(self._on_state_change)
+        """Handle application mount."""
+        if self.demo_mode:
+            self._load_demo_data()
+        elif self.sessions_dir:
+            self._load_sessions()
 
-        # Initial data load
-        if not self._demo_mode:
-            self._load_initial_data()
-            # Start background tasks
-            self.run_worker(self._start_file_watcher())
-            self.run_worker(self._periodic_refresh())
-        else:
-            self._update_from_state()
+    def _get_status_text(self) -> str:
+        """Get the status bar text."""
+        mode = self.state.spawn_mode
+        mode_icon = "" if mode == "embedded" else ""
+        mode_class = "mode-embedded" if mode == "embedded" else "mode-external"
 
-    def _load_initial_data(self) -> None:
-        """Load initial session data from files."""
-        from ..logging import get_logger
-        log = get_logger("app")
+        # Active session count
+        active_count = len([s for s in self.state.sessions if s.is_active])
 
+        return f"[{mode_class}]{mode_icon} {mode.title()}[/] | Active Sessions: {active_count}"
+
+    def _update_status(self) -> None:
+        """Update the status indicator."""
         try:
-            count = self.state.refresh_from_files(max_sessions=30, max_age_hours=24)
-            log.info(f"Loaded {count} sessions from files")
-            self._update_from_state()
-            self.notify(f"Loaded {count} sessions")
-        except Exception as e:
-            log.error(f"Failed to load sessions: {e}")
-            self.notify(f"Failed to load sessions: {e}", severity="error")
+            status = self.query_one("#status-indicator", Static)
+            status.update(self._get_status_text())
+        except Exception:
+            pass
 
-    async def _start_file_watcher(self) -> None:
-        """Start watching for session file changes."""
-        from ..logging import get_logger
-        log = get_logger("app")
+    def _on_state_update(self) -> None:
+        """Handle state updates."""
+        self._update_status()
 
-        try:
-            watcher = SessionWatcher(
-                on_session_change=self._on_session_change,
-                on_new_session=self._on_new_session,
-            )
-            await watcher.start()
-            self._watcher = watcher
-            log.info("File watcher started")
-        except Exception as e:
-            log.error(f"Failed to start file watcher: {e}")
-            # Continue without watcher - periodic refresh will still work
-
-    async def _periodic_refresh(self) -> None:
-        """Periodically refresh session data."""
-        while True:
-            await asyncio.sleep(REFRESH_INTERVAL)
-            try:
-                self.state.refresh_from_files(max_sessions=30, max_age_hours=24)
-                self.call_from_thread(self._update_from_state)
-            except Exception:
-                pass
-
-    def _on_session_change(self, session_info) -> None:
-        """Handle session file change from watcher."""
-        self.state.update_session(session_info)
-        self.call_from_thread(self._update_from_state)
-
-    def _on_new_session(self, session_info) -> None:
-        """Handle new session from watcher."""
-        self.state.update_session(session_info)
-        self.call_from_thread(self._update_from_state)
-
-    def _on_state_change(self) -> None:
-        """Called when state changes."""
-        self._update_from_state()
-
-    def _update_from_state(self) -> None:
-        """Update all widgets from current state."""
-        # Update status bar
-        status_bar = self.query_one(StatusBar)
-        status_bar.update_from_state(self.state)
-
-        # Update tree
-        tree = self.query_one(SessionTree)
-        tree.update_from_state(self.state)
-
-    def on_session_tree_node_selected(self, event: SessionTree.NodeSelected) -> None:
-        """Handle tree node selection."""
-        detail_panel = self.query_one(DetailPanel)
-        detail_panel.show(event.data)
-
-    # --- Actions ---
-
-    def action_refresh(self) -> None:
-        """Manually refresh session data."""
-        try:
-            count = self.state.refresh_from_files(max_sessions=30, max_age_hours=24)
-            self._update_from_state()
-            self.notify(f"Refreshed {count} sessions")
-        except Exception as e:
-            self.notify(f"Refresh failed: {e}", severity="error")
-
-    def action_new_session(self) -> None:
-        """Spawn a new Claude Code session."""
-        from ..spawner import spawn_session, detect_terminal
-
-        # For now, spawn in current working directory
-        # TODO: Add directory picker dialog
-        import os
-        cwd = os.getcwd()
-
-        terminal = detect_terminal()
-        if terminal.value == "unknown":
-            self.notify("No supported terminal found", severity="error")
+    def _load_sessions(self) -> None:
+        """Load sessions from the sessions directory."""
+        if not self.sessions_dir or not self.sessions_dir.exists():
             return
 
+        from ..discovery.parser import parse_sessions_in_directory
+        from ..state import get_active_claude_directories
+
+        # Get active Claude directories once for all sessions
+        active_directories = get_active_claude_directories()
+
+        parsed = parse_sessions_in_directory(self.sessions_dir)
+        for p in parsed:
+            self.state.load_session(p.session_path, active_directories)
+
+        # Update session list
+        self._update_session_list()
+
+    def _load_demo_data(self) -> None:
+        """Load demo data for testing."""
+        from ..demo import create_demo_sessions
+
+        sessions = create_demo_sessions()
+        self.state.sessions = sessions
+
+        self._update_session_list()
+
+    def _update_session_list(self) -> None:
+        """Update the session list widget."""
         try:
-            if spawn_session(cwd, terminal):
-                self.notify(f"Spawned new session in {terminal.value}")
+            session_list = self.query_one("#session-list", SessionList)
+            session_list.set_sessions(self.state.filtered_sessions)
+        except Exception:
+            pass
+
+    def _update_tool_list(self) -> None:
+        """Update the tool list widget."""
+        try:
+            tool_list = self.query_one("#tool-list", ToolList)
+            session = self.state.selected_session
+            if session:
+                tool_list.set_tools(session.tool_uses)
             else:
-                self.notify("Failed to spawn session", severity="error")
-        except Exception as e:
-            self.notify(f"Error spawning session: {e}", severity="error")
+                tool_list.set_tools([])
+        except Exception:
+            pass
 
-    def action_toggle_expand(self) -> None:
-        """Toggle expand/collapse of selected tree node."""
-        tree = self.query_one(SessionTree)
-        if tree.cursor_node:
-            tree.cursor_node.toggle()
+    def _update_detail_panel(self) -> None:
+        """Update the detail panel widget."""
+        try:
+            detail_panel = self.query_one("#detail-panel", DetailPanel)
+            tool = self.state.selected_tool
+            detail_panel.show_tool(tool)
+        except Exception:
+            pass
 
-    def action_next_session(self) -> None:
-        """Jump to next session in tree."""
-        tree = self.query_one(SessionTree)
-        for node in tree.root.children:
-            if tree.cursor_node and node.line > tree.cursor_node.line:
-                tree.select_node(node)
-                break
+    def _show_session_details(self) -> None:
+        """Show session details in the detail panel."""
+        try:
+            detail_panel = self.query_one("#detail-panel", DetailPanel)
+            session = self.state.selected_session
+            detail_panel.show_session(session)
+        except Exception:
+            pass
 
-    def action_prev_session(self) -> None:
-        """Jump to previous session in tree."""
-        tree = self.query_one(SessionTree)
-        prev_node = None
-        for node in tree.root.children:
-            if tree.cursor_node and node.line >= tree.cursor_node.line:
-                break
-            prev_node = node
-        if prev_node:
-            tree.select_node(prev_node)
+    def on_session_list_session_selected(
+        self, event: SessionList.SessionSelected
+    ) -> None:
+        """Handle session selection."""
+        self.state.select_session(event.session_id)
+        self._update_tool_list()
+        # Show session info in detail panel
+        self._show_session_details()
 
-    def action_show_help(self) -> None:
-        """Show help information."""
-        help_text = (
-            "Keybindings:\n"
-            "  q: Quit\n"
-            "  r: Refresh sessions\n"
-            "  n: New session in current directory\n"
-            "  space: Expand/collapse node\n"
-            "  tab/shift+tab: Navigate sessions"
+    def on_tool_list_tool_selected(self, event: ToolList.ToolSelected) -> None:
+        """Handle tool selection."""
+        self.state.select_tool(event.tool_use_id)
+        self._update_detail_panel()
+
+    def action_new_session(self) -> None:
+        """Spawn a new Claude session."""
+        if self.state.spawn_mode == "embedded":
+            # Open embedded terminal screen
+            self.push_screen(TerminalScreen(os.getcwd()))
+        else:
+            # Spawn external terminal
+            result = spawn_session(os.getcwd())
+            if result.success:
+                self.notify("New Claude session started", severity="information")
+            else:
+                self.notify(
+                    f"Failed to start session: {result.error}",
+                    severity="error",
+                )
+
+    def action_toggle_spawn_mode(self) -> None:
+        """Toggle between embedded and external spawn modes."""
+        new_mode = self.state.toggle_spawn_mode()
+        self.notify(
+            f"Spawn mode: {new_mode.title()}",
+            severity="information",
         )
+
+    def action_kill_session(self) -> None:
+        """Kill the currently selected session."""
+        session = self.state.selected_session
+        if not session:
+            self.notify("No session selected", severity="warning")
+            return
+
+        from ..process import kill_session, find_claude_processes, kill_by_pid
+
+        # First try to find by session ID
+        success, message = kill_session(session.session_id)
+
+        if success:
+            self.notify(f"Session killed: {message}", severity="information")
+            session.is_active = False
+            session.pid = None
+            self._update_session_list()
+        else:
+            # If no matching session found, show running processes
+            processes = find_claude_processes()
+            if processes:
+                # Try to kill by PID if we have one stored
+                if session.pid:
+                    success, message = kill_by_pid(session.pid)
+                    if success:
+                        self.notify(f"Session killed: {message}", severity="information")
+                        session.is_active = False
+                        session.pid = None
+                        self._update_session_list()
+                        return
+
+                # Show info about running processes
+                proc_info = ", ".join(f"PID {p.pid}" for p in processes[:3])
+                self.notify(
+                    f"Could not match session. Running Claude processes: {proc_info}",
+                    severity="warning",
+                )
+            else:
+                self.notify("No running Claude sessions found", severity="information")
+
+    def action_back_to_session(self) -> None:
+        """Go back to session view from tool view."""
+        if self.state.selected_tool_id:
+            self.state.selected_tool_id = None
+            self._show_session_details()
+
+    def action_refresh(self) -> None:
+        """Refresh the session list."""
+        if self.demo_mode:
+            self._load_demo_data()
+        else:
+            self._load_sessions()
+        self.notify("Sessions refreshed", severity="information")
+
+    def action_resume_session(self) -> None:
+        """Resume the selected session in embedded terminal."""
+        session = self.state.selected_session
+        if not session:
+            self.notify("No session selected", severity="warning")
+            return
+
+        # Get the project path for the session
+        cwd = session.project_path or os.getcwd()
+
+        # Open terminal screen with resume flag
+        from .screens.resume_terminal_screen import ResumeTerminalScreen
+        self.push_screen(ResumeTerminalScreen(
+            session_id=session.session_id,
+            cwd=cwd,
+        ))
+
+    def action_help(self) -> None:
+        """Show help information."""
+        help_text = """
+[bold]Claude Agent Visualizer[/bold]
+
+[bold]Keybindings:[/bold]
+  [cyan]n[/cyan] - Start new Claude session
+  [cyan]c[/cyan] - Resume selected session
+  [cyan]k[/cyan] - Kill selected session
+  [cyan]t[/cyan] - Toggle spawn mode (embedded/external)
+  [cyan]r[/cyan] - Refresh sessions
+  [cyan]ESC[/cyan] - Back to session view
+  [cyan]q[/cyan] - Quit
+  [cyan]?[/cyan] - Show this help
+
+[bold]Active Sessions:[/bold]
+  Sessions with a running Claude process are shown
+
+[bold]Spawn Modes:[/bold]
+  [green]Embedded[/green] - Run Claude inside this TUI
+  [yellow]External[/yellow] - Open Claude in a new terminal window
+
+[bold]Terminal Controls:[/bold]
+  [cyan]ESC[/cyan] - Graceful exit (sends /exit)
+  [cyan]Ctrl+C x2[/cyan] - Force kill session
+  [cyan]Ctrl+Q[/cyan] - Immediate force quit
+"""
         self.notify(help_text, timeout=10)
-
-    async def action_quit(self) -> None:
-        """Quit the app and clean up."""
-        # Stop file watcher if running
-        if self._watcher:
-            await self._watcher.stop()
-        self.exit()
-
-
-def run_app(state: AppState | None = None) -> None:
-    """Run the visualizer application."""
-    app = ClaudeAgentVizApp(state=state)
-    app.run()

@@ -1,7 +1,3 @@
-"""
-Claude Agent Visualizer
-
-A real-time terminal dashboard for visualizing Claude Code agent activity.
-"""
+"""Claude Agent Visualizer - A TUI for visualizing Claude agent sessions."""
 
 __version__ = "0.1.0"

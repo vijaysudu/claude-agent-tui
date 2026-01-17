@@ -1,18 +1,5 @@
-"""Spawner module for launching new Claude Code sessions.
+"""Spawner module for starting Claude sessions."""
 
-Provides functionality to spawn new Claude Code sessions in terminal windows.
-"""
+from .terminal import spawn_session, spawn_embedded, get_available_terminals
 
-from .terminal import (
-    TerminalType,
-    detect_terminal,
-    get_available_terminals,
-    spawn_session,
-)
-
-__all__ = [
-    "TerminalType",
-    "detect_terminal",
-    "get_available_terminals",
-    "spawn_session",
-]
+__all__ = ["spawn_session", "spawn_embedded", "get_available_terminals"]

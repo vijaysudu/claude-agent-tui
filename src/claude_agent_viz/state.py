@@ -1,380 +1,236 @@
-"""In-memory state store for Claude Agent Visualizer.
-
-This module provides a reactive state store that holds all session and agent
-data in memory. The state is populated by scanning and parsing Claude Code's
-session JSONL files.
-"""
+"""Application state management for Claude Agent Visualizer."""
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Callable
 
-from .discovery import (
-    ParsedSession,
-    SessionInfo,
-    get_active_processes,
-    parse_session,
-    scan_sessions,
-)
-from .store.models import (
-    Agent,
-    AgentStatus,
-    InputRequest,
-    InputRequestStatus,
-    Session,
-    SessionStatus,
-    ToolCategory,
-    ToolStatus,
-    ToolUse,
-)
+from .discovery.parser import ParsedSession, ParsedToolUse, parse_session
+from .store.models import Session, ToolUse, ToolStatus
+
+
+def get_active_claude_directories() -> set[str]:
+    """Get working directories of all running Claude processes.
+
+    Returns:
+        Set of absolute paths where Claude instances are running.
+    """
+    active_dirs: set[str] = set()
+
+    try:
+        # Use ps to find Claude processes - more reliable than pgrep
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode != 0:
+            return active_dirs
+
+        # Find PIDs of processes with "claude" command (not grep or other matches)
+        pids = []
+        for line in result.stdout.split('\n'):
+            # Match lines where the command is "claude" (not grep, python, etc.)
+            if ' claude ' in line or line.endswith(' claude') or 'claude --' in line:
+                # Skip grep, python, and other non-claude processes
+                if 'grep' in line or 'python' in line or 'claude-viz' in line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    pids.append(parts[1])  # PID is second column
+
+        for pid in pids:
+            if not pid:
+                continue
+
+            # Get working directory using lsof
+            try:
+                lsof_result = subprocess.run(
+                    ["lsof", "-p", pid],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+
+                for line in lsof_result.stdout.split('\n'):
+                    if ' cwd ' in line:
+                        # Parse the cwd line to get the directory path
+                        # Format: name pid user FD type ... path
+                        parts = line.split()
+                        if len(parts) >= 9:
+                            # Path is the last part
+                            cwd_path = parts[-1]
+                            active_dirs.add(cwd_path)
+                        break
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+                continue
+
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return active_dirs
 
 
 @dataclass
 class AppState:
-    """Application state container.
+    """Global application state."""
 
-    Holds all sessions and provides methods to update state from file scans.
-    Observers are notified when state changes.
-    """
+    sessions: list[Session] = field(default_factory=list)
+    selected_session_id: str | None = None
+    selected_tool_id: str | None = None
+    spawn_mode: str = "external"  # "external" or "embedded"
+    show_active_only: bool = True  # Filter to show only active sessions
 
-    sessions: dict[str, Session] = field(default_factory=dict)
-    _observers: list[Callable[[], None]] = field(default_factory=list, repr=False)
-    _file_offsets: dict[str, int] = field(default_factory=dict, repr=False)
-    _active_processes: dict[str, int] = field(default_factory=dict, repr=False)
+    # Callbacks for state changes
+    _on_session_update: list[Callable[[], None]] = field(default_factory=list)
 
-    def add_observer(self, callback: Callable[[], None]) -> None:
-        """Add an observer that will be called when state changes."""
-        self._observers.append(callback)
+    def add_update_listener(self, callback: Callable[[], None]) -> None:
+        """Add a callback to be called when state updates."""
+        self._on_session_update.append(callback)
 
-    def remove_observer(self, callback: Callable[[], None]) -> None:
-        """Remove an observer."""
-        if callback in self._observers:
-            self._observers.remove(callback)
+    def notify_update(self) -> None:
+        """Notify all listeners of a state update."""
+        for callback in self._on_session_update:
+            callback()
 
-    def _notify_observers(self) -> None:
-        """Notify all observers of a state change."""
-        for callback in self._observers:
-            try:
-                callback()
-            except Exception:
-                pass
+    @property
+    def selected_session(self) -> Session | None:
+        """Get the currently selected session."""
+        if not self.selected_session_id:
+            return None
+        for session in self.sessions:
+            if session.session_id == self.selected_session_id:
+                return session
+        return None
 
-    # --- File-based Session Discovery ---
+    @property
+    def selected_tool(self) -> ToolUse | None:
+        """Get the currently selected tool."""
+        session = self.selected_session
+        if not session or not self.selected_tool_id:
+            return None
+        return session.get_tool_by_id(self.selected_tool_id)
 
-    def refresh_from_files(
+    def select_session(self, session_id: str | None) -> None:
+        """Select a session by ID."""
+        self.selected_session_id = session_id
+        self.selected_tool_id = None
+        self.notify_update()
+
+    def select_tool(self, tool_id: str | None) -> None:
+        """Select a tool by ID."""
+        self.selected_tool_id = tool_id
+        self.notify_update()
+
+    def toggle_spawn_mode(self) -> str:
+        """Toggle between embedded and external spawn modes."""
+        self.spawn_mode = "embedded" if self.spawn_mode == "external" else "external"
+        self.notify_update()
+        return self.spawn_mode
+
+    def toggle_active_filter(self) -> bool:
+        """Toggle between showing all sessions and active only."""
+        self.show_active_only = not self.show_active_only
+        self.notify_update()
+        return self.show_active_only
+
+    @property
+    def filtered_sessions(self) -> list[Session]:
+        """Get sessions filtered by active status if filter is enabled."""
+        if not self.show_active_only:
+            return self.sessions
+        return [s for s in self.sessions if s.is_active]
+
+    def load_session(
         self,
-        max_sessions: int = 50,
-        max_age_hours: int = 24,
-    ) -> int:
-        """Refresh state by scanning and parsing session files.
+        jsonl_path: Path,
+        active_directories: set[str] | None = None,
+    ) -> Session:
+        """Load a session from a JSONL file.
 
         Args:
-            max_sessions: Maximum number of sessions to load
-            max_age_hours: Only load sessions modified within this many hours
-
-        Returns:
-            Number of sessions loaded/updated
+            jsonl_path: Path to the session JSONL file.
+            active_directories: Optional set of directories with running Claude processes.
+                If None, will be fetched automatically.
         """
-        # Get active claude processes for activity detection
-        self._active_processes = get_active_processes()
+        parsed = parse_session(jsonl_path)
+        session = convert_parsed_session(parsed, active_directories)
 
-        # Scan for session files
-        all_sessions = scan_sessions()
+        # Check if session already exists
+        for i, existing in enumerate(self.sessions):
+            if existing.session_id == session.session_id:
+                self.sessions[i] = session
+                self.notify_update()
+                return session
 
-        # Filter by age
-        cutoff = datetime.now() - timedelta(hours=max_age_hours)
-        recent_sessions = [s for s in all_sessions if s.last_modified > cutoff]
+        self.sessions.insert(0, session)
+        self.notify_update()
+        return session
 
-        # Limit number of sessions
-        sessions_to_load = recent_sessions[:max_sessions]
+    def update_session(self, jsonl_path: Path) -> Session:
+        """Update a session from a JSONL file."""
+        return self.load_session(jsonl_path)
 
-        updated_count = 0
-        for session_info in sessions_to_load:
-            if self._load_session(session_info):
-                updated_count += 1
 
-        self._notify_observers()
-        return updated_count
+def convert_parsed_session(
+    parsed: ParsedSession,
+    active_directories: set[str] | None = None,
+) -> Session:
+    """Convert a ParsedSession to a Session model.
 
-    def _load_session(self, session_info: SessionInfo) -> bool:
-        """Load or update a single session from its file.
+    Args:
+        parsed: The parsed session data.
+        active_directories: Set of directories with running Claude processes.
+            If None, will be fetched automatically.
+    """
+    tool_uses = [convert_parsed_tool_use(t) for t in parsed.tool_uses]
 
-        Returns True if the session was updated.
-        """
-        parsed = parse_session(session_info.file_path)
-        if not parsed:
-            return False
+    # Detect if session is active based on running Claude process
+    # A session is active if there's a Claude instance running in its project directory
+    is_active = False
+    if parsed.project_path:
+        if active_directories is None:
+            active_directories = get_active_claude_directories()
 
-        # Determine if session is active
-        is_active = self._is_session_active(session_info)
+        # Check if project path matches any active directory
+        project_path = str(Path(parsed.project_path).resolve())
+        for active_dir in active_directories:
+            try:
+                active_resolved = str(Path(active_dir).resolve())
+                # Check if paths match or if project is a parent of active dir
+                if project_path == active_resolved or active_resolved.startswith(project_path + "/"):
+                    is_active = True
+                    break
+            except (OSError, ValueError):
+                continue
 
-        # Check if we already have this session
-        if session_info.session_id in self.sessions:
-            existing = self.sessions[session_info.session_id]
-            # Update existing session
-            existing.last_activity = parsed.last_activity
-            if is_active:
-                existing.status = SessionStatus.ACTIVE
-            elif existing.status == SessionStatus.ACTIVE:
-                # Mark as completed if no longer active
-                existing.status = SessionStatus.COMPLETED
-            self._update_session_tools(existing, parsed)
-            return True
+    return Session(
+        session_id=parsed.session_id,
+        session_path=parsed.session_path,
+        tool_uses=tool_uses,
+        message_count=parsed.message_count,
+        start_time=parsed.start_time,
+        summary=parsed.summary,
+        project_path=parsed.project_path,
+        is_active=is_active,
+    )
 
-        # Create new session
-        session = Session(
-            id=parsed.session_id,
-            working_dir=parsed.cwd,
-            started_at=parsed.started_at,
-            status=SessionStatus.ACTIVE if is_active else SessionStatus.COMPLETED,
-            pid=0,
-            last_activity=parsed.last_activity,
-        )
 
-        # Create default agent for the session
-        agent = Agent(
-            id=f"{parsed.session_id}-main",
-            session_id=parsed.session_id,
-            agent_type="Claude",
-            description=parsed.summary or parsed.slug,
-            status=AgentStatus.RUNNING if is_active else AgentStatus.COMPLETED,
-            started_at=parsed.started_at,
-            messages_count=parsed.message_count,
-        )
+def convert_parsed_tool_use(parsed: ParsedToolUse) -> ToolUse:
+    """Convert a ParsedToolUse to a ToolUse model."""
+    status = ToolStatus.ERROR if parsed.is_error else ToolStatus.COMPLETED
 
-        # Add tool uses from parsed session
-        for tool in parsed.tool_uses[-20:]:  # Keep last 20 tools
-            agent.tool_uses.append(
-                ToolUse(
-                    id=tool.tool_id,
-                    agent_id=agent.id,
-                    tool_name=tool.tool_name,
-                    tool_category=tool.tool_category,
-                    parameters=tool.parameters,
-                    status=tool.status,
-                    started_at=tool.started_at,
-                )
-            )
-
-        session.agents.append(agent)
-        self.sessions[parsed.session_id] = session
-        return True
-
-    def _update_session_tools(self, session: Session, parsed: ParsedSession) -> None:
-        """Update session's agent tools from parsed data."""
-        if not session.agents:
-            return
-
-        agent = session.agents[0]  # Main agent
-        agent.messages_count = parsed.message_count
-
-        # Get existing tool IDs
-        existing_tool_ids = {t.id for t in agent.tool_uses}
-
-        # Add new tools
-        for tool in parsed.tool_uses[-20:]:
-            if tool.tool_id not in existing_tool_ids:
-                agent.tool_uses.append(
-                    ToolUse(
-                        id=tool.tool_id,
-                        agent_id=agent.id,
-                        tool_name=tool.tool_name,
-                        tool_category=tool.tool_category,
-                        parameters=tool.parameters,
-                        status=tool.status,
-                        started_at=tool.started_at,
-                    )
-                )
-
-        # Trim to last 20 tools
-        if len(agent.tool_uses) > 20:
-            agent.tool_uses = agent.tool_uses[-20:]
-
-    def _is_session_active(self, session_info: SessionInfo) -> bool:
-        """Determine if a session is active based on file modification and processes."""
-        # Check recent file modification
-        age = datetime.now() - session_info.last_modified
-        if age.total_seconds() < ACTIVITY_TIMEOUT_SECONDS:
-            return True
-
-        # Check for running process in that directory
-        return session_info.cwd in self._active_processes
-
-    def update_session(self, session_info: SessionInfo) -> None:
-        """Update a single session from file change notification.
-
-        Called by the watcher when a session file changes.
-        """
-        if self._load_session(session_info):
-            self._notify_observers()
-
-    # --- Session Operations ---
-
-    def get_or_create_session(
-        self,
-        session_id: str,
-        working_dir: str = "",
-        pid: int = 0,
-    ) -> Session:
-        """Get existing session or create a new one."""
-        if session_id not in self.sessions:
-            now = datetime.now()
-            self.sessions[session_id] = Session(
-                id=session_id,
-                working_dir=working_dir,
-                started_at=now,
-                status=SessionStatus.ACTIVE,
-                pid=pid,
-                last_activity=now,
-            )
-            self._notify_observers()
-        else:
-            self.sessions[session_id].last_activity = datetime.now()
-        return self.sessions[session_id]
-
-    def end_session(self, session_id: str, status: SessionStatus = SessionStatus.COMPLETED) -> None:
-        """Mark a session as ended."""
-        if session_id in self.sessions:
-            session = self.sessions[session_id]
-            session.status = status
-            session.ended_at = datetime.now()
-            self._notify_observers()
-
-    def remove_session(self, session_id: str) -> None:
-        """Remove a session from state."""
-        if session_id in self.sessions:
-            del self.sessions[session_id]
-            self._notify_observers()
-
-    # --- Agent Operations ---
-
-    def add_agent(
-        self,
-        session_id: str,
-        agent_id: str,
-        agent_type: str,
-        description: str,
-        parent_id: str | None = None,
-        working_dir: str = "",
-    ) -> Agent:
-        """Add a new agent to a session."""
-        session = self.get_or_create_session(session_id, working_dir)
-
-        if not session.working_dir and working_dir:
-            session.working_dir = working_dir
-
-        agent = Agent(
-            id=agent_id,
-            session_id=session_id,
-            agent_type=agent_type,
-            description=description,
-            status=AgentStatus.RUNNING,
-            started_at=datetime.now(),
-            parent_id=parent_id,
-        )
-
-        session.agents.append(agent)
-
-        if parent_id:
-            parent = self.get_agent(session_id, parent_id)
-            if parent:
-                parent.children.append(agent)
-
-        self._notify_observers()
-        return agent
-
-    def get_agent(self, session_id: str, agent_id: str) -> Agent | None:
-        """Get an agent by ID."""
-        session = self.sessions.get(session_id)
-        if not session:
-            return None
-        return next((a for a in session.agents if a.id == agent_id), None)
-
-    def update_agent_status(
-        self,
-        session_id: str,
-        agent_id: str,
-        status: AgentStatus,
-    ) -> None:
-        """Update an agent's status."""
-        agent = self.get_agent(session_id, agent_id)
-        if agent:
-            agent.status = status
-            if status in (AgentStatus.COMPLETED, AgentStatus.FAILED):
-                agent.ended_at = datetime.now()
-            self._notify_observers()
-
-    # --- Tool Operations ---
-
-    def add_tool_use(
-        self,
-        session_id: str,
-        agent_id: str,
-        tool_id: str,
-        tool_name: str,
-        tool_category: ToolCategory = ToolCategory.BUILTIN,
-        parameters: dict | None = None,
-    ) -> ToolUse | None:
-        """Add a tool use to an agent."""
-        agent = self.get_agent(session_id, agent_id)
-        if not agent:
-            return None
-
-        tool = ToolUse(
-            id=tool_id,
-            agent_id=agent_id,
-            tool_name=tool_name,
-            tool_category=tool_category,
-            parameters=parameters or {},
-            status=ToolStatus.RUNNING,
-            started_at=datetime.now(),
-        )
-
-        agent.tool_uses.append(tool)
-        self._notify_observers()
-        return tool
-
-    # --- Query Methods ---
-
-    @property
-    def active_sessions(self) -> list[Session]:
-        """Get all active sessions."""
-        return [s for s in self.sessions.values() if s.status == SessionStatus.ACTIVE]
-
-    @property
-    def total_agents(self) -> int:
-        """Get total number of agents across all sessions."""
-        return sum(len(s.agents) for s in self.sessions.values())
-
-    @property
-    def running_agents(self) -> int:
-        """Get number of currently running agents."""
-        return sum(
-            1
-            for s in self.sessions.values()
-            for a in s.agents
-            if a.status == AgentStatus.RUNNING
-        )
-
-    @property
-    def pending_inputs(self) -> int:
-        """Get number of pending input requests."""
-        return sum(
-            1
-            for s in self.sessions.values()
-            for a in s.agents
-            for r in a.input_requests
-            if r.status == InputRequestStatus.PENDING
-        )
-
-    def get_all_pending_input_requests(self) -> list[tuple[Session, Agent, InputRequest]]:
-        """Get all pending input requests with their session and agent context."""
-        results = []
-        for session in self.sessions.values():
-            for agent in session.agents:
-                for request in agent.input_requests:
-                    if request.status == InputRequestStatus.PENDING:
-                        results.append((session, agent, request))
-        return results
+    return ToolUse(
+        tool_use_id=parsed.tool_use_id,
+        tool_name=parsed.tool_name,
+        input_params=parsed.input_params,
+        status=status,
+        preview=parsed.preview,
+        timestamp=parsed.timestamp,
+        result_content=parsed.result_content,
+        error_message=parsed.error_message,
+    )

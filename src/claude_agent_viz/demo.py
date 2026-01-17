@@ -1,352 +1,281 @@
-"""Demo data generator for Claude Agent Visualizer.
+"""Demo data for Claude Agent Visualizer testing."""
 
-Provides realistic mock data for testing the TUI without needing actual
-Claude Code sessions running.
-"""
+from __future__ import annotations
 
-from datetime import datetime, timedelta
+from pathlib import Path
 
-from .state import AppState
-from .store.models import (
-    Agent,
-    AgentStatus,
-    InputOption,
-    InputRequest,
-    InputRequestStatus,
-    InputRequestType,
-    Session,
-    SessionStatus,
-    ToolCategory,
-    ToolStatus,
-    ToolUse,
-)
+from .store.models import Session, ToolUse, ToolStatus
 
 
-def create_demo_state() -> AppState:
-    """Create a demo state with realistic sample data.
+# Sample file contents for demo
+SAMPLE_PYTHON_CONTENT = '''"""Authentication module for the application."""
 
-    Returns an AppState populated with multiple sessions, agents, and tools
-    to showcase all features of the visualizer.
+from typing import Optional
+import hashlib
+import secrets
+
+
+class AuthManager:
+    """Manages user authentication."""
+
+    def __init__(self, secret_key: str):
+        self.secret_key = secret_key
+        self._sessions: dict[str, dict] = {}
+
+    def login(self, username: str, password: str) -> Optional[str]:
+        """Authenticate a user and return a session token.
+
+        Args:
+            username: The username.
+            password: The password.
+
+        Returns:
+            Session token if successful, None otherwise.
+        """
+        # Hash the password
+        password_hash = self._hash_password(password)
+
+        # Validate credentials (simplified)
+        if self._validate_credentials(username, password_hash):
+            token = secrets.token_urlsafe(32)
+            self._sessions[token] = {"username": username}
+            return token
+        return None
+
+    def _hash_password(self, password: str) -> str:
+        """Hash a password with the secret key."""
+        return hashlib.sha256(
+            f"{password}{self.secret_key}".encode()
+        ).hexdigest()
+
+    def _validate_credentials(self, username: str, password_hash: str) -> bool:
+        """Validate user credentials."""
+        # In a real app, this would check against a database
+        return True
+'''
+
+SAMPLE_BASH_OUTPUT = '''$ npm run build
+
+> myapp@1.0.0 build
+> tsc && vite build
+
+vite v5.0.0 building for production...
+transforming...
+✓ 234 modules transformed.
+rendering chunks...
+computing gzip size...
+
+dist/index.html                  0.42 kB │ gzip:  0.28 kB
+dist/assets/index-a1b2c3d4.css  15.23 kB │ gzip:  4.21 kB
+dist/assets/index-e5f6g7h8.js   89.45 kB │ gzip: 28.67 kB
+
+✓ built in 3.24s
+'''
+
+SAMPLE_GREP_OUTPUT = '''src/auth/login.py:15:    def login(self, username: str, password: str):
+src/auth/login.py:42:    async def login_async(self, username: str, password: str):
+src/api/routes.py:28:@router.post("/login")
+src/api/routes.py:29:async def handle_login(request: LoginRequest):
+tests/test_auth.py:15:    def test_login_success(self):
+tests/test_auth.py:34:    def test_login_failure(self):
+'''
+
+SAMPLE_GLOB_OUTPUT = '''src/auth/__init__.py
+src/auth/login.py
+src/auth/logout.py
+src/auth/session.py
+src/auth/middleware.py
+src/auth/utils.py
+'''
+
+
+def create_demo_sessions() -> list[Session]:
+    """Create demo sessions with rich content for testing.
+
+    Returns:
+        List of demo sessions.
     """
-    state = AppState()
-    now = datetime.now()
+    sessions = []
 
-    # --- Session 1: Active development session with multiple agents ---
+    # Session 1: Feature implementation
     session1 = Session(
-        id="sess_demo_abc123",
-        working_dir="~/projects/myapp",
-        started_at=now - timedelta(minutes=5, seconds=32),
-        status=SessionStatus.ACTIVE,
-        pid=12345,
-        last_activity=now - timedelta(seconds=5),
+        session_id="demo-feature-impl-abc123",
+        session_path=Path("/demo/session1.jsonl"),
+        message_count=15,
+        start_time="2025-01-17T10:30:00Z",
+        is_active=False,
     )
 
-    # Root agent
-    root_agent = Agent(
-        id="agent_root_001",
-        session_id=session1.id,
-        agent_type="Root",
-        description="Main orchestration",
-        status=AgentStatus.RUNNING,
-        started_at=session1.started_at,
-        tokens_used=15234,
-        messages_count=24,
-    )
+    session1.tool_uses = [
+        ToolUse(
+            tool_use_id="tool-001",
+            tool_name="Glob",
+            input_params={"pattern": "src/auth/**/*.py"},
+            status=ToolStatus.COMPLETED,
+            preview="src/auth/**/*.py",
+            result_content=SAMPLE_GLOB_OUTPUT,
+        ),
+        ToolUse(
+            tool_use_id="tool-002",
+            tool_name="Read",
+            input_params={"file_path": "src/auth/login.py"},
+            status=ToolStatus.COMPLETED,
+            preview="src/auth/login.py",
+            result_content=SAMPLE_PYTHON_CONTENT,
+        ),
+        ToolUse(
+            tool_use_id="tool-003",
+            tool_name="Grep",
+            input_params={"pattern": "def login", "path": "src/"},
+            status=ToolStatus.COMPLETED,
+            preview="def login in src/",
+            result_content=SAMPLE_GREP_OUTPUT,
+        ),
+        ToolUse(
+            tool_use_id="tool-004",
+            tool_name="Edit",
+            input_params={
+                "file_path": "src/auth/login.py",
+                "old_string": "    def login(self, username: str, password: str):",
+                "new_string": "    def login(self, username: str, password: str, remember: bool = False):",
+            },
+            status=ToolStatus.COMPLETED,
+            preview="src/auth/login.py (edit)",
+            result_content="File edited successfully",
+        ),
+        ToolUse(
+            tool_use_id="tool-005",
+            tool_name="Bash",
+            input_params={"command": "npm run build"},
+            status=ToolStatus.COMPLETED,
+            preview="npm run build",
+            result_content=SAMPLE_BASH_OUTPUT,
+        ),
+    ]
 
-    # Explore agent (child of root)
-    explore_agent = Agent(
-        id="agent_explore_002",
-        session_id=session1.id,
-        parent_id=root_agent.id,
-        agent_type="Explore",
-        description="Find authentication files",
-        status=AgentStatus.RUNNING,
-        started_at=now - timedelta(minutes=3),
-        tokens_used=4521,
-        messages_count=8,
-        tool_uses=[
-            ToolUse(
-                id="tool_001",
-                agent_id="agent_explore_002",
-                tool_name="Glob",
-                tool_category=ToolCategory.BUILTIN,
-                parameters={"pattern": "**/*.py"},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=2, seconds=45),
-                ended_at=now - timedelta(minutes=2, seconds=42),
-                duration_ms=3000,
-                result_preview="45 files matched",
-            ),
-            ToolUse(
-                id="tool_002",
-                agent_id="agent_explore_002",
-                tool_name="Grep",
-                tool_category=ToolCategory.BUILTIN,
-                parameters={"pattern": "authentication", "path": "src/"},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=2, seconds=30),
-                ended_at=now - timedelta(minutes=2, seconds=25),
-                duration_ms=5000,
-                result_preview="12 matches in 5 files",
-            ),
-            ToolUse(
-                id="tool_003",
-                agent_id="agent_explore_002",
-                tool_name="Read",
-                tool_category=ToolCategory.BUILTIN,
-                parameters={"file_path": "src/auth/login.py"},
-                status=ToolStatus.RUNNING,
-                started_at=now - timedelta(seconds=5),
-            ),
-        ],
-    )
-    root_agent.children.append(explore_agent)
+    sessions.append(session1)
 
-    # Plan agent (child of root, waiting for input)
-    plan_agent = Agent(
-        id="agent_plan_003",
-        session_id=session1.id,
-        parent_id=root_agent.id,
-        agent_type="Plan",
-        description="Design authentication flow",
-        status=AgentStatus.WAITING_INPUT,
-        started_at=now - timedelta(minutes=1, seconds=30),
-        tokens_used=2100,
-        messages_count=5,
-        input_requests=[
-            InputRequest(
-                id="input_001",
-                agent_id="agent_plan_003",
-                session_id=session1.id,
-                request_type=InputRequestType.SELECTION,
-                prompt="Which authentication method should we implement?",
-                options=[
-                    InputOption(
-                        label="OAuth 2.0",
-                        value="oauth",
-                        description="Industry standard for third-party auth",
-                    ),
-                    InputOption(
-                        label="JWT",
-                        value="jwt",
-                        description="Stateless token-based authentication",
-                    ),
-                    InputOption(
-                        label="Session-based",
-                        value="session",
-                        description="Traditional server-side sessions",
-                    ),
-                ],
-                status=InputRequestStatus.PENDING,
-                created_at=now - timedelta(seconds=45),
-            ),
-        ],
-    )
-    root_agent.children.append(plan_agent)
-
-    # Completed bash agent
-    bash_agent = Agent(
-        id="agent_bash_004",
-        session_id=session1.id,
-        parent_id=root_agent.id,
-        agent_type="Bash",
-        description="Run tests",
-        status=AgentStatus.COMPLETED,
-        started_at=now - timedelta(minutes=4, seconds=15),
-        ended_at=now - timedelta(minutes=3, seconds=45),
-        tokens_used=890,
-        messages_count=3,
-        tool_uses=[
-            ToolUse(
-                id="tool_004",
-                agent_id="agent_bash_004",
-                tool_name="Bash",
-                tool_category=ToolCategory.COMMAND,
-                parameters={"command": "npm test"},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=4),
-                ended_at=now - timedelta(minutes=3, seconds=50),
-                duration_ms=10000,
-                result_preview="42 tests passed, 0 failed",
-            ),
-        ],
-    )
-    root_agent.children.append(bash_agent)
-
-    session1.agents = [root_agent, explore_agent, plan_agent, bash_agent]
-    state.sessions[session1.id] = session1
-
-    # --- Session 2: Simpler session with MCP tools ---
+    # Session 2: Bug fix
     session2 = Session(
-        id="sess_demo_def456",
-        working_dir="~/projects/api",
-        started_at=now - timedelta(minutes=2, seconds=15),
-        status=SessionStatus.ACTIVE,
-        pid=12346,
-        last_activity=now - timedelta(seconds=10),
+        session_id="demo-bugfix-def456",
+        session_path=Path("/demo/session2.jsonl"),
+        message_count=8,
+        start_time="2025-01-17T11:45:00Z",
+        is_active=True,
     )
 
-    api_agent = Agent(
-        id="agent_api_005",
-        session_id=session2.id,
-        agent_type="general-purpose",
-        description="Review PR #123",
-        status=AgentStatus.RUNNING,
-        started_at=session2.started_at,
-        tokens_used=8765,
-        messages_count=15,
-        tool_uses=[
-            ToolUse(
-                id="tool_005",
-                agent_id="agent_api_005",
-                tool_name="mcp__github__pull_request_read",
-                tool_category=ToolCategory.MCP,
-                parameters={"owner": "myorg", "repo": "api", "pull_number": 123},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=2),
-                ended_at=now - timedelta(minutes=1, seconds=55),
-                duration_ms=5000,
-                result_preview="PR #123: Add user authentication",
-            ),
-            ToolUse(
-                id="tool_006",
-                agent_id="agent_api_005",
-                tool_name="mcp__github__get_file_contents",
-                tool_category=ToolCategory.MCP,
-                parameters={"path": "src/auth.py"},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=1, seconds=50),
-                ended_at=now - timedelta(minutes=1, seconds=45),
-                duration_ms=5000,
-                result_preview="File contents retrieved",
-            ),
-        ],
-    )
+    session2.tool_uses = [
+        ToolUse(
+            tool_use_id="tool-101",
+            tool_name="Grep",
+            input_params={"pattern": "TypeError", "path": "logs/"},
+            status=ToolStatus.COMPLETED,
+            preview="TypeError in logs/",
+            result_content='''logs/error.log:2025-01-17 11:30:15 TypeError: Cannot read property 'id' of undefined
+logs/error.log:2025-01-17 11:30:15     at processUser (src/api/users.js:45)
+logs/error.log:2025-01-17 11:30:15     at async handleRequest (src/api/routes.js:23)
+''',
+        ),
+        ToolUse(
+            tool_use_id="tool-102",
+            tool_name="Read",
+            input_params={"file_path": "src/api/users.js"},
+            status=ToolStatus.COMPLETED,
+            preview="src/api/users.js",
+            result_content='''// User API handlers
+const processUser = async (user) => {
+    // BUG: user might be undefined
+    const userId = user.id;
+    const profile = await fetchProfile(userId);
+    return profile;
+};
 
-    session2.agents = [api_agent]
-    state.sessions[session2.id] = session2
+export { processUser };
+''',
+        ),
+        ToolUse(
+            tool_use_id="tool-103",
+            tool_name="Edit",
+            input_params={
+                "file_path": "src/api/users.js",
+                "old_string": "    const userId = user.id;",
+                "new_string": "    if (!user) throw new Error('User is required');\n    const userId = user.id;",
+            },
+            status=ToolStatus.COMPLETED,
+            preview="src/api/users.js (edit)",
+            result_content="File edited successfully",
+        ),
+        ToolUse(
+            tool_use_id="tool-104",
+            tool_name="Bash",
+            input_params={"command": "npm test"},
+            status=ToolStatus.ERROR,
+            preview="npm test",
+            error_message='''FAIL src/api/__tests__/users.test.js
+  ● User API › processUser › should handle null user
 
-    # --- Session 3: Recently completed session ---
+    expect(received).rejects.toThrow()
+
+    Expected: Error with message 'User is required'
+    Received: TypeError: Cannot read property 'id' of null
+
+      45 |     expect(async () => {
+      46 |       await processUser(null);
+    > 47 |     }).rejects.toThrow('User is required');
+         |                ^
+''',
+        ),
+    ]
+
+    sessions.append(session2)
+
+    # Session 3: Code review
     session3 = Session(
-        id="sess_demo_ghi789",
-        working_dir="~/projects/docs",
-        started_at=now - timedelta(minutes=10),
-        ended_at=now - timedelta(minutes=1),
-        status=SessionStatus.COMPLETED,
-        pid=12347,
-        last_activity=now - timedelta(minutes=1),
+        session_id="demo-review-ghi789",
+        session_path=Path("/demo/session3.jsonl"),
+        message_count=5,
+        start_time="2025-01-17T09:00:00Z",
+        is_active=False,
     )
 
-    docs_agent = Agent(
-        id="agent_docs_006",
-        session_id=session3.id,
-        agent_type="Explore",
-        description="Update README",
-        status=AgentStatus.COMPLETED,
-        started_at=session3.started_at,
-        ended_at=session3.ended_at,
-        tokens_used=3200,
-        messages_count=7,
-        tool_uses=[
-            ToolUse(
-                id="tool_007",
-                agent_id="agent_docs_006",
-                tool_name="Read",
-                tool_category=ToolCategory.BUILTIN,
-                parameters={"file_path": "README.md"},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=9),
-                ended_at=now - timedelta(minutes=8, seconds=55),
-                duration_ms=5000,
-            ),
-            ToolUse(
-                id="tool_008",
-                agent_id="agent_docs_006",
-                tool_name="Edit",
-                tool_category=ToolCategory.BUILTIN,
-                parameters={"file_path": "README.md"},
-                status=ToolStatus.COMPLETED,
-                started_at=now - timedelta(minutes=5),
-                ended_at=now - timedelta(minutes=4, seconds=50),
-                duration_ms=10000,
-            ),
-        ],
-    )
+    session3.tool_uses = [
+        ToolUse(
+            tool_use_id="tool-201",
+            tool_name="Read",
+            input_params={"file_path": "src/utils/validation.ts"},
+            status=ToolStatus.COMPLETED,
+            preview="src/utils/validation.ts",
+            result_content='''import { z } from 'zod';
 
-    session3.agents = [docs_agent]
-    state.sessions[session3.id] = session3
+export const userSchema = z.object({
+    id: z.string().uuid(),
+    email: z.string().email(),
+    name: z.string().min(1).max(100),
+    age: z.number().int().min(0).max(150).optional(),
+    role: z.enum(['admin', 'user', 'guest']),
+    createdAt: z.date(),
+});
 
-    # --- Session 4: Failed agent ---
-    session4 = Session(
-        id="sess_demo_jkl012",
-        working_dir="~/projects/failing",
-        started_at=now - timedelta(minutes=3),
-        status=SessionStatus.ACTIVE,
-        pid=12348,
-        last_activity=now - timedelta(minutes=2),
-    )
+export type User = z.infer<typeof userSchema>;
 
-    failed_agent = Agent(
-        id="agent_fail_007",
-        session_id=session4.id,
-        agent_type="Bash",
-        description="Build project",
-        status=AgentStatus.FAILED,
-        started_at=session4.started_at,
-        ended_at=now - timedelta(minutes=2),
-        tokens_used=500,
-        messages_count=2,
-        tool_uses=[
-            ToolUse(
-                id="tool_009",
-                agent_id="agent_fail_007",
-                tool_name="Bash",
-                tool_category=ToolCategory.COMMAND,
-                parameters={"command": "npm run build"},
-                status=ToolStatus.FAILED,
-                started_at=now - timedelta(minutes=2, seconds=30),
-                ended_at=now - timedelta(minutes=2),
-                duration_ms=30000,
-                error_message="Exit code 1: Module not found: '@types/node'",
-            ),
-        ],
-    )
+export const validateUser = (data: unknown): User => {
+    return userSchema.parse(data);
+};
+''',
+        ),
+        ToolUse(
+            tool_use_id="tool-202",
+            tool_name="Task",
+            input_params={
+                "description": "Review validation logic",
+                "prompt": "Review the validation schema for security issues",
+            },
+            status=ToolStatus.COMPLETED,
+            preview="Review validation logic",
+            result_content="Validation review completed. No critical issues found.",
+        ),
+    ]
 
-    session4.agents = [failed_agent]
-    state.sessions[session4.id] = session4
+    sessions.append(session3)
 
-    return state
-
-
-def create_minimal_demo_state() -> AppState:
-    """Create a minimal demo state with just one session.
-
-    Useful for testing basic functionality.
-    """
-    state = AppState()
-    now = datetime.now()
-
-    session = Session(
-        id="sess_minimal",
-        working_dir="~/demo",
-        started_at=now - timedelta(minutes=1),
-        status=SessionStatus.ACTIVE,
-        pid=99999,
-        last_activity=now - timedelta(seconds=5),
-    )
-
-    agent = Agent(
-        id="agent_minimal",
-        session_id=session.id,
-        agent_type="Explore",
-        description="Demo agent",
-        status=AgentStatus.RUNNING,
-        started_at=session.started_at,
-        tokens_used=1000,
-        messages_count=5,
-    )
-
-    session.agents = [agent]
-    state.sessions[session.id] = session
-
-    return state
+    return sessions
