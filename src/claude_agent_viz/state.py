@@ -196,13 +196,14 @@ def convert_parsed_session(
         if active_directories is None:
             active_directories = get_active_claude_directories()
 
-        # Check if project path matches any active directory
+        # Check if project path matches any active directory exactly
         project_path = str(Path(parsed.project_path).resolve())
         for active_dir in active_directories:
             try:
                 active_resolved = str(Path(active_dir).resolve())
-                # Check if paths match or if project is a parent of active dir
-                if project_path == active_resolved or active_resolved.startswith(project_path + "/"):
+                # Only exact path matches - a session is only active if Claude
+                # is running in exactly that directory, not a subdirectory
+                if project_path == active_resolved:
                     is_active = True
                     break
             except (OSError, ValueError):

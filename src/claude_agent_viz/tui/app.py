@@ -180,8 +180,49 @@ class ClaudeAgentVizApp(App):
         for p in parsed:
             self.state.load_session(p.session_path, active_directories)
 
+        # Fix: Only the most recent session per active directory should be active
+        # Group sessions by their resolved project path
+        self._fix_active_session_detection(active_directories)
+
         # Update session list
         self._update_session_list()
+
+    def _fix_active_session_detection(self, active_directories: set[str]) -> None:
+        """Ensure only the most recent session per active directory is marked active.
+
+        Multiple sessions can share the same project path, but only one Claude
+        process can run per directory at a time - it's always the most recent session.
+        """
+        from pathlib import Path
+
+        # Resolve active directories
+        resolved_active = set()
+        for d in active_directories:
+            try:
+                resolved_active.add(str(Path(d).resolve()))
+            except (OSError, ValueError):
+                continue
+
+        # Group active sessions by their resolved project path
+        sessions_by_path: dict[str, list] = {}
+        for session in self.state.sessions:
+            if session.is_active and session.project_path:
+                try:
+                    resolved = str(Path(session.project_path).resolve())
+                    if resolved not in sessions_by_path:
+                        sessions_by_path[resolved] = []
+                    sessions_by_path[resolved].append(session)
+                except (OSError, ValueError):
+                    continue
+
+        # For each path group, only keep the most recent session as active
+        for path, sessions in sessions_by_path.items():
+            if len(sessions) > 1:
+                # Sort by start_time descending (most recent first)
+                sessions.sort(key=lambda s: s.start_time or "", reverse=True)
+                # Mark all but the first (most recent) as inactive
+                for session in sessions[1:]:
+                    session.is_active = False
 
     def _load_demo_data(self) -> None:
         """Load demo data for testing."""
