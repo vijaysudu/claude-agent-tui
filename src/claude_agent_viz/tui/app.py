@@ -205,6 +205,16 @@ class ClaudeAgentVizApp(App):
         self._update_session_list()
         self._update_status()
 
+        # If the reloaded session is currently selected, refresh tool list and detail panel
+        selected = self.state.selected_session
+        if selected and selected.session_path == path:
+            self._update_tool_list()
+            # Refresh detail panel with updated session or tool data
+            if self.state.selected_tool_id:
+                self._update_detail_panel()
+            else:
+                self._show_session_details()
+
     def _load_new_session(self, path: Path) -> None:
         """Load a new session file (called from main thread)."""
         from ..state import get_active_claude_directories
