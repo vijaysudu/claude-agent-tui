@@ -254,10 +254,13 @@ class ClaudeAgentVizApp(App):
         self._update_session_list()
 
     def _fix_active_session_detection(self, active_directories: set[str]) -> None:
-        """Ensure only the currently running session per active directory is marked active.
+        """Ensure sessions are marked active based on running Claude processes.
 
         Uses PIDs from pgrep to identify active Claude processes, then matches
-        them to the most recently modified session file in each directory.
+        them to the most recently modified session files in each directory.
+
+        If there are N PIDs in a directory, we mark the N most recently modified
+        sessions in that directory as active.
         """
         from pathlib import Path
         from ..state import get_active_claude_processes
@@ -278,8 +281,8 @@ class ClaudeAgentVizApp(App):
             session.is_active = False
             session.pid = None
 
-        # For each active directory, find the most recently modified session
-        # and mark it as active with its PID
+        # For each active directory, find sessions and mark N as active
+        # where N = number of PIDs in that directory
         for resolved_path, pids in resolved_active.items():
             # Find sessions matching this directory
             matching_sessions = []
@@ -305,12 +308,13 @@ class ClaudeAgentVizApp(App):
 
             matching_sessions.sort(key=get_mtime, reverse=True)
 
-            # Mark the most recently modified session as active
-            active_session = matching_sessions[0]
-            active_session.is_active = True
-            # Store the first PID (there may be multiple claude processes)
-            if pids:
-                active_session.pid = pids[0]
+            # Mark N sessions as active, where N = number of PIDs
+            # The most recently modified sessions are assumed to correspond
+            # to the active processes
+            num_active = min(len(pids), len(matching_sessions))
+            for i in range(num_active):
+                matching_sessions[i].is_active = True
+                matching_sessions[i].pid = pids[i]
 
     def _load_demo_data(self) -> None:
         """Load demo data for testing."""
