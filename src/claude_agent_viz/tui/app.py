@@ -256,47 +256,61 @@ class ClaudeAgentVizApp(App):
     def _fix_active_session_detection(self, active_directories: set[str]) -> None:
         """Ensure only the currently running session per active directory is marked active.
 
-        Multiple sessions can share the same project path, but only one Claude
-        process can run per directory at a time - it's the one with the most
-        recently modified session file (the actively running session).
+        Uses PIDs from pgrep to identify active Claude processes, then matches
+        them to the most recently modified session file in each directory.
         """
         from pathlib import Path
+        from ..state import get_active_claude_processes
 
-        # Resolve active directories
-        resolved_active = set()
-        for d in active_directories:
+        # Get active processes (directory -> list of PIDs)
+        active_processes = get_active_claude_processes()
+
+        # Resolve active directories to their PIDs
+        resolved_active: dict[str, list[int]] = {}
+        for d, pids in active_processes.items():
             try:
-                resolved_active.add(str(Path(d).resolve()))
+                resolved_active[str(Path(d).resolve())] = pids
             except (OSError, ValueError):
                 continue
 
-        # Group active sessions by their resolved project path
-        sessions_by_path: dict[str, list] = {}
+        # First pass: mark all sessions inactive, then selectively activate
         for session in self.state.sessions:
-            if session.is_active and session.project_path:
+            session.is_active = False
+            session.pid = None
+
+        # For each active directory, find the most recently modified session
+        # and mark it as active with its PID
+        for resolved_path, pids in resolved_active.items():
+            # Find sessions matching this directory
+            matching_sessions = []
+            for session in self.state.sessions:
+                if not session.project_path:
+                    continue
                 try:
-                    resolved = str(Path(session.project_path).resolve())
-                    if resolved not in sessions_by_path:
-                        sessions_by_path[resolved] = []
-                    sessions_by_path[resolved].append(session)
+                    session_path = str(Path(session.project_path).resolve())
+                    if session_path == resolved_path:
+                        matching_sessions.append(session)
                 except (OSError, ValueError):
                     continue
 
-        # For each path group, only keep the session with most recently modified file as active
-        for path, sessions in sessions_by_path.items():
-            if len(sessions) > 1:
-                # Sort by file modification time (most recent first)
-                # The actively running session will have the most recently written file
-                def get_mtime(s):
-                    try:
-                        return s.session_path.stat().st_mtime
-                    except (OSError, AttributeError):
-                        return 0
+            if not matching_sessions:
+                continue
 
-                sessions.sort(key=get_mtime, reverse=True)
-                # Mark all but the first (most recently modified) as inactive
-                for session in sessions[1:]:
-                    session.is_active = False
+            # Sort by file modification time - most recent first
+            def get_mtime(s):
+                try:
+                    return s.session_path.stat().st_mtime
+                except (OSError, AttributeError):
+                    return 0
+
+            matching_sessions.sort(key=get_mtime, reverse=True)
+
+            # Mark the most recently modified session as active
+            active_session = matching_sessions[0]
+            active_session.is_active = True
+            # Store the first PID (there may be multiple claude processes)
+            if pids:
+                active_session.pid = pids[0]
 
     def _load_demo_data(self) -> None:
         """Load demo data for testing."""

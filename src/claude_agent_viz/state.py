@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,40 +12,90 @@ from .discovery.parser import ParsedSession, ParsedToolUse, parse_session
 from .store.models import Session, ToolUse, ToolStatus
 
 
-def get_active_claude_directories() -> set[str]:
-    """Get working directories of all running Claude processes.
+def get_current_session_ids() -> dict[str, str]:
+    """Get the current active session IDs from Claude's history.jsonl.
+
+    Reads the most recent entries from ~/.claude/history.jsonl to determine
+    which session is currently active for each project directory.
 
     Returns:
-        Set of absolute paths where Claude instances are running.
+        Dict mapping project paths to their current session IDs.
     """
-    active_dirs: set[str] = set()
+    history_path = Path.home() / ".claude" / "history.jsonl"
+    project_sessions: dict[str, str] = {}
+
+    if not history_path.exists():
+        return project_sessions
 
     try:
-        # Use ps to find Claude processes - more reliable than pgrep
+        # Read last 100 lines (should be enough to find recent sessions)
+        with open(history_path, "r", encoding="utf-8") as f:
+            # Read all lines and get last 100
+            lines = f.readlines()
+            recent_lines = lines[-100:] if len(lines) > 100 else lines
+
+        # Process in order - later entries override earlier ones
+        for line in recent_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                project = entry.get("project")
+                session_id = entry.get("sessionId")
+                if project and session_id:
+                    # Normalize project path
+                    project = str(Path(project).resolve())
+                    project_sessions[project] = session_id
+            except json.JSONDecodeError:
+                continue
+
+    except (OSError, IOError):
+        pass
+
+    return project_sessions
+
+
+def get_active_claude_processes() -> dict[str, list[int]]:
+    """Get working directories and PIDs of all running Claude processes.
+
+    Uses pgrep to find Claude processes and lsof to get their working directories.
+
+    Returns:
+        Dict mapping directory paths to list of Claude process PIDs in that directory.
+    """
+    active_processes: dict[str, list[int]] = {}
+
+    try:
+        # Use pgrep to find Claude process PIDs
         result = subprocess.run(
-            ["ps", "aux"],
+            ["pgrep", "-f", "claude"],
             capture_output=True,
             text=True,
             timeout=5,
         )
 
         if result.returncode != 0:
-            return active_dirs
+            return active_processes
 
-        # Find PIDs of processes with "claude" command (not grep or other matches)
-        pids = []
-        for line in result.stdout.split('\n'):
-            # Match lines where the command is "claude" (not grep, python, etc.)
-            if ' claude ' in line or line.endswith(' claude') or 'claude --' in line:
-                # Skip grep, python, and other non-claude processes
-                if 'grep' in line or 'python' in line or 'claude-viz' in line:
-                    continue
-                parts = line.split()
-                if len(parts) >= 2:
-                    pids.append(parts[1])  # PID is second column
+        pids = [p.strip() for p in result.stdout.strip().split('\n') if p.strip()]
 
         for pid in pids:
-            if not pid:
+            # Filter out non-claude processes (grep, python, claude-viz, etc.)
+            try:
+                ps_result = subprocess.run(
+                    ["ps", "-p", pid, "-o", "args="],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                cmd = ps_result.stdout.strip()
+                # Only match actual claude command, not claude-viz or scripts
+                if not cmd or 'claude-viz' in cmd or 'python' in cmd or 'grep' in cmd:
+                    continue
+                if not (cmd == 'claude' or cmd.startswith('claude ') or '/claude' in cmd):
+                    continue
+            except subprocess.SubprocessError:
                 continue
 
             # Get working directory using lsof
@@ -58,21 +109,29 @@ def get_active_claude_directories() -> set[str]:
 
                 for line in lsof_result.stdout.split('\n'):
                     if ' cwd ' in line:
-                        # Parse the cwd line to get the directory path
-                        # Format: name pid user FD type ... path
                         parts = line.split()
                         if len(parts) >= 9:
-                            # Path is the last part
                             cwd_path = parts[-1]
-                            active_dirs.add(cwd_path)
+                            if cwd_path not in active_processes:
+                                active_processes[cwd_path] = []
+                            active_processes[cwd_path].append(int(pid))
                         break
-            except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError, ValueError):
                 continue
 
     except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
         pass
 
-    return active_dirs
+    return active_processes
+
+
+def get_active_claude_directories() -> set[str]:
+    """Get working directories of all running Claude processes.
+
+    Returns:
+        Set of absolute paths where Claude instances are running.
+    """
+    return set(get_active_claude_processes().keys())
 
 
 @dataclass
