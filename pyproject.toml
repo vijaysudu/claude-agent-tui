@@ -36,6 +36,7 @@ classifiers = [
 
 dependencies = [
     "textual>=0.50.0",
+    "textual-terminal>=0.3.0",
     "rich>=13.0.0",
     "watchdog>=4.0.0",
 ]

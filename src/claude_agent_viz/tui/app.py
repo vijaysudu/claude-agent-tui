@@ -14,7 +14,7 @@ from textual.widgets import Header, Footer, Static
 from .widgets.session_list import SessionList
 from .widgets.tool_list import ToolList
 from .widgets.detail_panel import DetailPanel
-from .screens.terminal_screen import TerminalScreen
+from .screens.embedded_terminal_screen import EmbeddedTerminalScreen
 from ..state import AppState
 from ..spawner.terminal import spawn_session
 
@@ -388,23 +388,30 @@ class ClaudeAgentVizApp(App):
         # Get the project path for the session
         cwd = session.project_path or os.getcwd()
 
-        # Open external terminal with resume session
-        from ..spawner.terminal import spawn_resume_session
-        result = spawn_resume_session(
-            cwd=cwd,
-            session_id=event.session_id,
-        )
-
-        if result.success:
-            self.notify("Opening terminal to resume session...", severity="information")
+        if self.state.spawn_mode == "embedded":
+            # Open embedded terminal with resume session
+            self.push_screen(EmbeddedTerminalScreen(
+                session_id=event.session_id,
+                cwd=cwd,
+            ))
         else:
-            self.notify(f"Failed to resume: {result.error}", severity="error")
+            # Open external terminal with resume session
+            from ..spawner.terminal import spawn_resume_session
+            result = spawn_resume_session(
+                cwd=cwd,
+                session_id=event.session_id,
+            )
+
+            if result.success:
+                self.notify("Opening terminal to resume session...", severity="information")
+            else:
+                self.notify(f"Failed to resume: {result.error}", severity="error")
 
     def action_new_session(self) -> None:
         """Spawn a new Claude session."""
         if self.state.spawn_mode == "embedded":
             # Open embedded terminal screen
-            self.push_screen(TerminalScreen(os.getcwd()))
+            self.push_screen(EmbeddedTerminalScreen(cwd=os.getcwd()))
         else:
             # Spawn external terminal
             result = spawn_session(os.getcwd())
@@ -479,7 +486,7 @@ class ClaudeAgentVizApp(App):
         self.notify("Sessions refreshed", severity="information")
 
     def action_resume_session(self) -> None:
-        """Resume the selected session in embedded terminal."""
+        """Resume the selected session."""
         session = self.state.selected_session
         if not session:
             self.notify("No session selected", severity="warning")
@@ -488,12 +495,24 @@ class ClaudeAgentVizApp(App):
         # Get the project path for the session
         cwd = session.project_path or os.getcwd()
 
-        # Open terminal screen with resume flag
-        from .screens.resume_terminal_screen import ResumeTerminalScreen
-        self.push_screen(ResumeTerminalScreen(
-            session_id=session.session_id,
-            cwd=cwd,
-        ))
+        if self.state.spawn_mode == "embedded":
+            # Open embedded terminal with resume session
+            self.push_screen(EmbeddedTerminalScreen(
+                session_id=session.session_id,
+                cwd=cwd,
+            ))
+        else:
+            # Open external terminal with resume session
+            from ..spawner.terminal import spawn_resume_session
+            result = spawn_resume_session(
+                cwd=cwd,
+                session_id=session.session_id,
+            )
+
+            if result.success:
+                self.notify("Opening terminal to resume session...", severity="information")
+            else:
+                self.notify(f"Failed to resume: {result.error}", severity="error")
 
     def action_help(self) -> None:
         """Show help information."""
