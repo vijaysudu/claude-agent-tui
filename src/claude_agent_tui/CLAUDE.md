@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `claude_agent_viz` package is the root module for the Claude Agent Visualizer, a terminal user interface (TUI) application that allows you to visualize, monitor, and interact with Claude Code agent sessions. This tool provides real-time insights into Claude's tool usage, conversation flow, and session management capabilities.
+The `claude_agent_tui` package is the root module for the Claude Agent Visualizer, a terminal user interface (TUI) application that allows you to visualize, monitor, and interact with Claude Code agent sessions. This tool provides real-time insights into Claude's tool usage, conversation flow, and session management capabilities.
 
 ## Purpose
 
@@ -20,7 +20,7 @@ This module serves as the foundation for:
 #### `__init__.py`
 - **Purpose**: Package initialization and version definition
 - **Exports**: `__version__ = "0.1.0"`
-- **Usage**: Import version info with `from claude_agent_viz import __version__`
+- **Usage**: Import version info with `from claude_agent_tui import __version__`
 
 #### `__main__.py`
 - **Purpose**: Primary entry point for the application
@@ -29,7 +29,7 @@ This module serves as the foundation for:
   - `--demo`: Run with demo data instead of real sessions
   - `--sessions-dir, -d`: Custom directory containing session JSONL files
   - `--version`: Display version information
-- **Usage**: Executed via `python -m claude_agent_viz` or the `claude-viz` command
+- **Usage**: Executed via `python -m claude_agent_tui` or the `claude-tui` command
 
 #### `cli.py`
 - **Purpose**: CLI wrapper module that re-exports the main function
@@ -79,7 +79,7 @@ This module serves as the foundation for:
   - Sample Python, Bash, and Grep outputs
   - Three scenarios: feature implementation, bug fix, and code review
   - Includes completed and error tool statuses
-- **Usage**: Activated with `claude-viz --demo` flag
+- **Usage**: Activated with `claude-tui --demo` flag
 
 ## Important Classes and Concepts
 
@@ -191,7 +191,7 @@ The root module coordinates with several submodules:
 
 ```python
 from pathlib import Path
-from claude_agent_viz.state import AppState
+from claude_agent_tui.state import AppState
 
 # Create application state
 state = AppState()
@@ -213,7 +213,7 @@ for tool in session.tool_uses:
 ### Process Management
 
 ```python
-from claude_agent_viz.process import find_claude_processes, kill_session
+from claude_agent_tui.process import find_claude_processes, kill_session
 
 # Find all running Claude processes
 processes = find_claude_processes()
@@ -229,16 +229,16 @@ print(message)
 
 ```bash
 # Standard launch (uses ~/.claude/projects)
-claude-viz
+claude-tui
 
 # Demo mode with sample data
-claude-viz --demo
+claude-tui --demo
 
 # Custom sessions directory
-claude-viz -d /path/to/sessions
+claude-tui -d /path/to/sessions
 
 # Check version
-claude-viz --version
+claude-tui --version
 ```
 
 ## Data Flow

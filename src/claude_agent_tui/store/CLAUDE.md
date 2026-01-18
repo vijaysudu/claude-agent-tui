@@ -118,7 +118,7 @@ Container for all Claude configuration items.
 ### Working with Sessions
 
 ```python
-from claude_agent_viz.store import Session, ToolUse, ToolStatus
+from claude_agent_tui.store import Session, ToolUse, ToolStatus
 from pathlib import Path
 
 # Create a new session
@@ -176,7 +176,7 @@ bash_tool.duration_ms = 1500
 ### Working with Configuration Models
 
 ```python
-from claude_agent_viz.store.config_models import (
+from claude_agent_tui.store.config_models import (
     Skill, Agent, MCPServer, ConfigCollection
 )
 from pathlib import Path
@@ -224,19 +224,19 @@ config = ConfigCollection(
 ### Internal Dependencies
 The store module is imported and used by:
 
-1. **TUI Components** (`claude_agent_viz.tui.*`):
+1. **TUI Components** (`claude_agent_tui.tui.*`):
    - `app.py`: Main application uses Session and ToolUse
    - `widgets/session_list.py`: Displays Session objects
    - `widgets/tool_list.py`: Displays ToolUse objects
    - `widgets/detail_panel.py`: Shows detailed Session/ToolUse information
 
-2. **State Management** (`claude_agent_viz.state`):
+2. **State Management** (`claude_agent_tui.state`):
    - Uses Session and ToolUse for application state
 
-3. **Discovery Module** (`claude_agent_viz.discovery`):
+3. **Discovery Module** (`claude_agent_tui.discovery`):
    - Imports and populates Session objects from filesystem
 
-4. **Demo Module** (`claude_agent_viz.demo`):
+4. **Demo Module** (`claude_agent_tui.demo`):
    - Creates sample Session and ToolUse objects for testing
 
 ### External Dependencies

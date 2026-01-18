@@ -53,7 +53,7 @@ Detects and returns available terminal emulators on the system, ordered by prefe
 
 **Example:**
 ```python
-from claude_agent_viz.spawner import get_available_terminals
+from claude_agent_tui.spawner import get_available_terminals
 
 terminals = get_available_terminals()
 # Returns: ['Warp.app', 'kitty', 'Terminal.app'] on macOS with those installed
@@ -78,7 +78,7 @@ Spawns a new Claude session in an external terminal window.
 
 **Example:**
 ```python
-from claude_agent_viz.spawner import spawn_session
+from claude_agent_tui.spawner import spawn_session
 
 result = spawn_session(
     cwd="/path/to/project",
@@ -107,7 +107,7 @@ Similar to `spawn_session`, but executes `claude --resume <session_id>` instead 
 
 **Example:**
 ```python
-from claude_agent_viz.spawner import spawn_resume_session
+from claude_agent_tui.spawner import spawn_resume_session
 
 result = spawn_resume_session(
     cwd="/path/to/project",
@@ -135,7 +135,7 @@ Creates a Claude session for embedded terminal use with a PTY (pseudo-terminal).
 
 **Example:**
 ```python
-from claude_agent_viz.spawner import spawn_embedded
+from claude_agent_tui.spawner import spawn_embedded
 
 result = spawn_embedded(cwd="/path/to/project")
 

@@ -115,7 +115,7 @@ The app manages subprocess lifecycle:
 ### Basic Usage
 
 ```python
-from claude_agent_viz.tui import ClaudeAgentVizApp
+from claude_agent_tui.tui import ClaudeAgentVizApp
 
 # Run with default sessions directory (~/.claude/projects)
 app = ClaudeAgentVizApp()
@@ -136,13 +136,13 @@ The module is typically invoked via the CLI entry point:
 
 ```bash
 # Default: real sessions from ~/.claude/projects
-claude-viz
+claude-tui
 
 # Demo mode with sample data
-claude-viz --demo
+claude-tui --demo
 
 # Custom sessions directory
-claude-viz -d /path/to/sessions
+claude-tui -d /path/to/sessions
 ```
 
 ### Key User Workflows

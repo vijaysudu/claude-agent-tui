@@ -18,7 +18,7 @@ def get_default_sessions_dir() -> Path:
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        prog="claude-viz",
+        prog="claude-tui",
         description="Visualize Claude agent sessions in a TUI",
     )
     parser.add_argument(
@@ -50,7 +50,7 @@ def main() -> int:
     try:
         from .tui.app import ClaudeAgentVizApp
     except ImportError as e:
-        print(f"Error: Missing dependencies. Install with: pip install claude-agent-viz[tui]")
+        print(f"Error: Missing dependencies. Install with: pip install claude-agent-tui[tui]")
         print(f"Details: {e}")
         return 1
 

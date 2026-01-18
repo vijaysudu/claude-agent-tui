@@ -119,7 +119,7 @@ Container for all discovered configuration items (defined in `store/config_model
 ### Parsing a Single Session
 
 ```python
-from claude_agent_viz.discovery import parse_session
+from claude_agent_tui.discovery import parse_session
 from pathlib import Path
 
 # Parse a session file
@@ -142,7 +142,7 @@ for tool_use in session.tool_uses:
 ### Parsing Multiple Sessions
 
 ```python
-from claude_agent_viz.discovery.parser import parse_sessions_in_directory
+from claude_agent_tui.discovery.parser import parse_sessions_in_directory
 from pathlib import Path
 
 # Parse all sessions in the projects directory
@@ -157,7 +157,7 @@ for session in sessions[:10]:  # Show 10 most recent
 ### Watching for Session Changes
 
 ```python
-from claude_agent_viz.discovery import SessionWatcher
+from claude_agent_tui.discovery import SessionWatcher
 from pathlib import Path
 
 def on_session_changed(path: Path):
@@ -186,7 +186,7 @@ watcher.stop()
 ### Discovering Claude Configurations
 
 ```python
-from claude_agent_viz.discovery.config_parser import (
+from claude_agent_tui.discovery.config_parser import (
     discover_all_configs,
     discover_skills,
     get_claude_dir

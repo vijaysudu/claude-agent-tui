@@ -52,7 +52,7 @@ def find_claude_processes() -> list[ClaudeProcess]:
                 continue
 
             # Check if this is a claude process
-            if "claude" in command.lower() and "claude-viz" not in command.lower():
+            if "claude" in command.lower() and "claude-tui" not in command.lower():
                 # Try to get the working directory
                 cwd = get_process_cwd(pid) or ""
 

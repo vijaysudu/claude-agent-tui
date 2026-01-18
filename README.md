@@ -34,16 +34,16 @@ pip install -e ".[dev]"
 
 ```bash
 # Run with real sessions from ~/.claude/projects
-claude-viz
+claude-tui
 
 # Run with demo data
-claude-viz --demo
+claude-tui --demo
 
 # Specify a custom sessions directory
-claude-viz -d /path/to/sessions
+claude-tui -d /path/to/sessions
 
 # Show version
-claude-viz --version
+claude-tui --version
 ```
 
 ## Keybindings
@@ -117,7 +117,7 @@ Config tab shows collapsible sections:
 ## Project Structure
 
 ```
-src/claude_agent_viz/
+src/claude_agent_tui/
 ├── __init__.py          # Package init with version
 ├── __main__.py          # CLI entry point
 ├── cli.py               # CLI wrapper

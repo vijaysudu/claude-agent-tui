@@ -90,7 +90,7 @@ def get_active_claude_processes() -> dict[str, list[int]]:
         pids = [p.strip() for p in result.stdout.strip().split('\n') if p.strip()]
 
         for pid in pids:
-            # Filter out non-claude processes (grep, python, claude-viz, etc.)
+            # Filter out non-claude processes (grep, python, claude-tui, etc.)
             try:
                 ps_result = subprocess.run(
                     ["ps", "-p", pid, "-o", "args="],
@@ -99,8 +99,8 @@ def get_active_claude_processes() -> dict[str, list[int]]:
                     timeout=5,
                 )
                 cmd = ps_result.stdout.strip()
-                # Only match actual claude command, not claude-viz or scripts
-                if not cmd or 'claude-viz' in cmd or 'python' in cmd or 'grep' in cmd:
+                # Only match actual claude command, not claude-tui or scripts
+                if not cmd or 'claude-tui' in cmd or 'python' in cmd or 'grep' in cmd:
                     continue
                 if not (cmd == 'claude' or cmd.startswith('claude ') or '/claude' in cmd):
                     continue
