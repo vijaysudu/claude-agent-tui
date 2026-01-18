@@ -138,3 +138,10 @@ class SessionList(OptionList):
         """Handle option highlight (single click/arrow key)."""
         if event.option_id:
             self.post_message(self.SessionSelected(str(event.option_id)))
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        """Handle option selection (click on already-highlighted item)."""
+        if event.option_id:
+            self.post_message(self.SessionSelected(str(event.option_id)))
