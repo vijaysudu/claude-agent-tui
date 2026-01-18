@@ -26,8 +26,14 @@ def get_available_terminals() -> list[str]:
     """Get list of available terminal emulators.
 
     Returns:
-        List of available terminal command names.
+        List of available terminal command names, ordered by preference.
     """
+    # Check for Warp first (preferred on macOS)
+    available = []
+    if sys.platform == "darwin" and os.path.exists("/Applications/Warp.app"):
+        available.append("Warp.app")
+
+    # Other terminals in preference order
     terminals = [
         "wezterm",
         "kitty",
@@ -36,15 +42,13 @@ def get_available_terminals() -> list[str]:
         "gnome-terminal",
         "konsole",
         "xterm",
-        "Terminal.app",
     ]
 
-    available = []
     for term in terminals:
         if shutil.which(term):
             available.append(term)
 
-    # Check for macOS Terminal.app
+    # Check for macOS Terminal.app as fallback
     if sys.platform == "darwin" and os.path.exists("/System/Applications/Utilities/Terminal.app"):
         available.append("Terminal.app")
 
@@ -80,7 +84,22 @@ def spawn_session(cwd: str, terminal: str | None = None) -> SpawnResult:
         terminal = available[0]
 
     try:
-        if terminal == "Terminal.app" or (sys.platform == "darwin" and terminal is None):
+        if terminal == "Warp.app":
+            # Warp terminal (preferred on macOS)
+            script = f'''
+            tell application "Warp"
+                activate
+                tell application "System Events" to tell process "Warp"
+                    keystroke "t" using command down
+                    delay 0.3
+                    keystroke "cd {cwd} && claude"
+                    keystroke return
+                end tell
+            end tell
+            '''
+            subprocess.Popen(["osascript", "-e", script])
+
+        elif terminal == "Terminal.app" or (sys.platform == "darwin" and terminal is None):
             # macOS Terminal.app
             script = f'tell application "Terminal" to do script "cd {cwd} && claude"'
             subprocess.Popen(["osascript", "-e", script])
@@ -185,7 +204,22 @@ def spawn_resume_session(
     claude_cmd = f"claude --resume {session_id}"
 
     try:
-        if terminal == "Terminal.app" or (sys.platform == "darwin" and terminal is None):
+        if terminal == "Warp.app":
+            # Warp terminal (preferred on macOS)
+            script = f'''
+            tell application "Warp"
+                activate
+                tell application "System Events" to tell process "Warp"
+                    keystroke "t" using command down
+                    delay 0.3
+                    keystroke "cd {cwd} && {claude_cmd}"
+                    keystroke return
+                end tell
+            end tell
+            '''
+            subprocess.Popen(["osascript", "-e", script])
+
+        elif terminal == "Terminal.app" or (sys.platform == "darwin" and terminal is None):
             # macOS Terminal.app
             script = f'tell application "Terminal" to do script "cd {cwd} && {claude_cmd}"'
             subprocess.Popen(["osascript", "-e", script])
