@@ -15,7 +15,8 @@ from textual.containers import Container
 try:
     from textual_terminal import Terminal
     TERMINAL_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
+    # textual-terminal may not be compatible with current textual version
     TERMINAL_AVAILABLE = False
     Terminal = None  # type: ignore[misc, assignment]
 

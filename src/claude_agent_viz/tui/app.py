@@ -14,7 +14,7 @@ from textual.widgets import Header, Footer, Static
 from .widgets.session_list import SessionList
 from .widgets.tool_list import ToolList
 from .widgets.detail_panel import DetailPanel
-from .screens.embedded_terminal_screen import EmbeddedTerminalScreen
+from .screens.embedded_terminal_screen import EmbeddedTerminalScreen, TERMINAL_AVAILABLE
 from ..state import AppState
 from ..spawner.terminal import spawn_session
 
@@ -388,7 +388,7 @@ class ClaudeAgentVizApp(App):
         # Get the project path for the session
         cwd = session.project_path or os.getcwd()
 
-        if self.state.spawn_mode == "embedded":
+        if self.state.spawn_mode == "embedded" and TERMINAL_AVAILABLE:
             # Open embedded terminal with resume session
             self.push_screen(EmbeddedTerminalScreen(
                 session_id=event.session_id,
@@ -409,7 +409,7 @@ class ClaudeAgentVizApp(App):
 
     def action_new_session(self) -> None:
         """Spawn a new Claude session."""
-        if self.state.spawn_mode == "embedded":
+        if self.state.spawn_mode == "embedded" and TERMINAL_AVAILABLE:
             # Open embedded terminal screen
             self.push_screen(EmbeddedTerminalScreen(cwd=os.getcwd()))
         else:
@@ -495,7 +495,7 @@ class ClaudeAgentVizApp(App):
         # Get the project path for the session
         cwd = session.project_path or os.getcwd()
 
-        if self.state.spawn_mode == "embedded":
+        if self.state.spawn_mode == "embedded" and TERMINAL_AVAILABLE:
             # Open embedded terminal with resume session
             self.push_screen(EmbeddedTerminalScreen(
                 session_id=session.session_id,
