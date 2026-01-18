@@ -141,7 +141,7 @@ class AppState:
     sessions: list[Session] = field(default_factory=list)
     selected_session_id: str | None = None
     selected_tool_id: str | None = None
-    spawn_mode: str = "external"  # "external" or "embedded"
+    spawn_mode: str = "embedded"  # "embedded" or "external"
     show_active_only: bool = True  # Filter to show only active sessions
 
     # Callbacks for state changes
