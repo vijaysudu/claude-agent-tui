@@ -144,6 +144,9 @@ class AppState:
     spawn_mode: str = "external"  # "external" or "embedded" (embedded requires compatible textual-terminal)
     show_active_only: bool = True  # Filter to show only active sessions
 
+    # Track spawned process PIDs for cleanup
+    _spawned_pids: list[int] = field(default_factory=list)
+
     # Callbacks for state changes
     _on_session_update: list[Callable[[], None]] = field(default_factory=list)
 
@@ -233,6 +236,51 @@ class AppState:
     def update_session(self, jsonl_path: Path) -> Session:
         """Update a session from a JSONL file."""
         return self.load_session(jsonl_path)
+
+    def track_spawned_pid(self, pid: int) -> None:
+        """Track a spawned process PID for cleanup.
+
+        Args:
+            pid: Process ID to track.
+        """
+        if pid not in self._spawned_pids:
+            self._spawned_pids.append(pid)
+
+    def untrack_spawned_pid(self, pid: int) -> None:
+        """Remove a PID from tracking (e.g., when process exits normally).
+
+        Args:
+            pid: Process ID to untrack.
+        """
+        if pid in self._spawned_pids:
+            self._spawned_pids.remove(pid)
+
+    def cleanup_spawned_processes(self) -> list[tuple[int, bool]]:
+        """Kill all tracked spawned processes.
+
+        Called when the app exits to prevent orphaned processes.
+
+        Returns:
+            List of (pid, success) tuples indicating cleanup results.
+        """
+        import os
+        import signal
+
+        results = []
+        for pid in self._spawned_pids[:]:  # Copy list to avoid modification during iteration
+            try:
+                # Check if process is still running
+                os.kill(pid, 0)  # Signal 0 just checks if process exists
+                # Process exists, send SIGTERM
+                os.kill(pid, signal.SIGTERM)
+                results.append((pid, True))
+            except OSError:
+                # Process doesn't exist or we can't signal it
+                results.append((pid, False))
+            finally:
+                self._spawned_pids.remove(pid)
+
+        return results
 
 
 def convert_parsed_session(

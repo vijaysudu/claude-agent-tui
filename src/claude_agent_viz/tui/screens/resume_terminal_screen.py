@@ -141,10 +141,22 @@ class ResumeTerminalScreen(Screen):
             self._terminal.stop_session()
         self.app.pop_screen()
 
+    def on_resume_terminal_session_started(
+        self, event: ResumeTerminal.SessionStarted
+    ) -> None:
+        """Handle session start - track PID for cleanup."""
+        # Track the PID so it can be cleaned up if app exits
+        if hasattr(self.app, 'state'):
+            self.app.state.track_spawned_pid(event.pid)
+
     def on_resume_terminal_session_ended(
         self, event: ResumeTerminal.SessionEnded
     ) -> None:
         """Handle session end."""
+        # Untrack the PID since process exited normally
+        if self._terminal and self._terminal._pid and hasattr(self.app, 'state'):
+            self.app.state.untrack_spawned_pid(self._terminal._pid)
+
         self.notify(
             f"Claude session ended with code {event.exit_code}",
             severity="information" if event.exit_code == 0 else "warning",

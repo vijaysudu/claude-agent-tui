@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Tuple
 
 
 @dataclass
@@ -117,39 +116,35 @@ def spawn_session(cwd: str, terminal: str | None = None) -> SpawnResult:
             subprocess.Popen(["osascript", "-e", script])
 
         elif terminal == "wezterm":
+            # Don't use start_new_session=True - it causes orphaned processes
+            # when the terminal window closes
             subprocess.Popen(
                 ["wezterm", "start", "--cwd", cwd, "--", "claude"],
-                start_new_session=True,
             )
 
         elif terminal == "kitty":
             subprocess.Popen(
                 ["kitty", "--directory", cwd, "claude"],
-                start_new_session=True,
             )
 
         elif terminal == "alacritty":
             subprocess.Popen(
                 ["alacritty", "--working-directory", cwd, "-e", "claude"],
-                start_new_session=True,
             )
 
         elif terminal == "gnome-terminal":
             subprocess.Popen(
                 ["gnome-terminal", f"--working-directory={cwd}", "--", "claude"],
-                start_new_session=True,
             )
 
         elif terminal == "konsole":
             subprocess.Popen(
                 ["konsole", "--workdir", cwd, "-e", "claude"],
-                start_new_session=True,
             )
 
         elif terminal == "xterm":
             subprocess.Popen(
                 ["xterm", "-e", f"cd {cwd} && claude"],
-                start_new_session=True,
             )
 
         else:
@@ -237,39 +232,34 @@ def spawn_resume_session(
             subprocess.Popen(["osascript", "-e", script])
 
         elif terminal == "wezterm":
+            # Don't use start_new_session=True - it causes orphaned processes
             subprocess.Popen(
                 ["wezterm", "start", "--cwd", cwd, "--", "sh", "-c", claude_cmd],
-                start_new_session=True,
             )
 
         elif terminal == "kitty":
             subprocess.Popen(
                 ["kitty", "--directory", cwd, "sh", "-c", claude_cmd],
-                start_new_session=True,
             )
 
         elif terminal == "alacritty":
             subprocess.Popen(
                 ["alacritty", "--working-directory", cwd, "-e", "sh", "-c", claude_cmd],
-                start_new_session=True,
             )
 
         elif terminal == "gnome-terminal":
             subprocess.Popen(
                 ["gnome-terminal", f"--working-directory={cwd}", "--", "sh", "-c", claude_cmd],
-                start_new_session=True,
             )
 
         elif terminal == "konsole":
             subprocess.Popen(
                 ["konsole", "--workdir", cwd, "-e", "sh", "-c", claude_cmd],
-                start_new_session=True,
             )
 
         elif terminal == "xterm":
             subprocess.Popen(
                 ["xterm", "-e", f"cd {cwd} && {claude_cmd}"],
-                start_new_session=True,
             )
 
         else:

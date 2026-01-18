@@ -147,6 +147,13 @@ class ClaudeAgentVizApp(App):
     def on_unmount(self) -> None:
         """Handle application unmount."""
         self._stop_watcher()
+        # Clean up any spawned processes to prevent orphans
+        results = self.state.cleanup_spawned_processes()
+        for pid, success in results:
+            if success:
+                self.log.info(f"Cleaned up spawned process {pid}")
+            else:
+                self.log.warning(f"Failed to clean up process {pid} (may have already exited)")
 
     def _start_watcher(self) -> None:
         """Start watching for new session files."""
@@ -426,10 +433,18 @@ class ClaudeAgentVizApp(App):
     def action_toggle_spawn_mode(self) -> None:
         """Toggle between embedded and external spawn modes."""
         new_mode = self.state.toggle_spawn_mode()
-        self.notify(
-            f"Spawn mode: {new_mode.title()}",
-            severity="information",
-        )
+        if new_mode == "embedded" and not TERMINAL_AVAILABLE:
+            self.notify(
+                "Embedded mode unavailable (textual-terminal incompatible). Using external.",
+                severity="warning",
+            )
+            # Revert to external since embedded isn't available
+            self.state.toggle_spawn_mode()
+        else:
+            self.notify(
+                f"Spawn mode: {new_mode.title()}",
+                severity="information",
+            )
 
     def action_kill_session(self) -> None:
         """Kill the currently selected session."""
